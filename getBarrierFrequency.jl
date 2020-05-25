@@ -5,7 +5,7 @@ using Dierckx
 using DelimitedFiles
 using PyPlot
 using LaTeXStrings
-@import LinearAlgebra as la
+using Optim, LineSearches
 
 struct constants
     au2wn::Float64
@@ -29,33 +29,37 @@ mutable struct photon
     v::Float64
 end
 
+# TODO: should be a better way to initialize these values
 consts = constants(219474.63068, 27.2113961, 3.15775e5)
 mol = molecule(1836, 0.045469750862, 0.0017408, 0, 0)
 pho = photon(1, 0.2/consts.au2ev, 0, 0, 0) 
 
+# deprecated analytical solution for the imaginary ω
+# μ(R) and origianl ω need to be fitted before hand
 function solve(omegaC, chi)
     chi2_M = chi^2 / mol.mass
     a_bc2 = 0.67635632914003565952952644166097
     hf11 = -mol.omegaB^2 + 2chi2_M/omegaC*a_bc2
     omegaC2 = omegaC^2
     tmp1 = omegaC2 + hf11
-    # println(hf11, " ", sqrt(2omegaC*a_bc2/mol.mass)*chi)
     tmp2 = (omegaC2 - hf11)^2 + 8a_bc2*omegaC*chi2_M
     tmp2 = sqrt(tmp2)
-    #println((tmp2-tmp1)/2)
     freq = [-sqrt((tmp2-tmp1)/2), sqrt((tmp2+tmp1)/2)] * consts.au2wn
     return freq
 end
 
-function getImFreq()
+# obtain both normal mode frequencies and
+# the corresponding crossover temperature
+function getImFreq(x0::Array{Float64,1})
     hf = Calculus.hessian(x -> uTotal(x[1], x[2]))
-    mat = hf([0.0, 0.0])
+    mat = hf(x0)
     mat[1, 1] /= mol.mass
     mat[2, 1] /= sqrt(mol.mass)
     mat[1, 2] = mat[2, 1]
+    # possibly a bug in Calculus package
+    # when ω is fairly small, ∂²V/∂q² will be ZERO
     mat[2, 2] = pho.omegaC^2
     lambda = Calculus.eigvals(mat)
-    #println(lambda, " lambda")
     if lambda[1] < 0
         lambda[1] = -sqrt(-lambda[1])
         tC = -lambda[1] / (2pi) * consts.au2k
@@ -67,39 +71,9 @@ function getImFreq()
     return lambda*consts.au2wn, tC
 end
 
-function stpdest(a, b, c)
-    tol = 1e-8
-    maxCycle = 100000
-    i = 0
-    step = 5
-    x = [0.1, 0.2]
-    g = Calculus.gradient(x -> uTotal(x[1], x[2]), x)
-    gNorm = la.norm(g)
-    while (gNorm > tol)
-        i += 1
-        x -= g * step
-        g = Calculus.gradient(x -> uTotal(x[1], x[2]), x)
-        gNorm = la.norm(g)
-        if (i > maxCycle)
-            println("Fail to converge after $maxCycle iterations.")
-            return
-        end
-    end
-    println("Converge after $i iterations.")
-    return x
+function printPES()
+    # dummy
 end
-
-# getImFreq(halfOmegaC2, sqrt2OmegaChi, chi2OverOmega)
-# freq = solve(pho.omegaC, pho.chi)
-# println(freq, " freq anal")
-# chi = collect(0.000:0.002:0.008)
-# for χ in chi
-#     pho.chi = χ
-#     halfOmegaC2 = pho.omegaC^2 / 2
-#     sqrt2OmegaChi = sqrt(2pho.omegaC) * pho.chi
-#     chi2OverOmega  = pho.chi^2 / pho.omegaC
-#     x = stpdest(halfOmegaC2, sqrt2OmegaChi, chi2OverOmega)
-#     freq = solve(pho.omegaC, pho.chi)
 #     qMax = 1.5x[1]
 #     qMax = 3x[2]
 #     println(x, ", ", χ)
@@ -139,8 +113,6 @@ dipoleRaw = readdlm("dm.txt")
 pesMol = Spline1D(potentialRaw[:, 1], potentialRaw[:, 2])
 # cubic spline interpolate of μ
 dipole = Spline1D(dipoleRaw[:, 1], dipoleRaw[:, 2])
-# pesMol(x) = 4.254987695360661e-5x^4 - 0.00278189309952x^2
-# dipole(x) = 1.9657x - 25.2139tanh(x/9.04337)
 
 # photon DOF potential
 pesPho(qPho) = 0.5 * pho.omegaC^2 * qPho^2
@@ -160,6 +132,7 @@ uTotal(qMol, qPho) = pesMol(qMol) + pesPho(qPho) + lightMatter(qMol, qPho)
 chi = append!(collect(0.0000:0.0002:0.0008), collect(0.001:0.001:0.01))
 omega = collect(0.2:0.1:6) * mol.omegaB
  
+# calculate the relation between χ, ω_c and ω_b 
 function omegaOmegaC(chi, omegaC)
     nChi = length(chi)
     nOmega = length(omegaC)
@@ -176,15 +149,103 @@ function omegaOmegaC(chi, omegaC)
         end
         @printf(f, "\n")
     end
-    return imFreq
+    for k in 1:length(chi)
+        plot(omega*consts.au2wn, imFreq[k, :], label=string(chi[k]))
+    end
+    grid(true)
+    xlabel(L"$\omega_c$")
+    ylabel(L"$\omega_b$")
+    legend()
+    # avoid conflict with Base.show()
+    PyPlot.show()
 end
 
-imFreq = omegaOmegaC(chi, omega)
-for k in 1:length(chi)
-    plot(omega*consts.au2wn, imFreq[k, :], label=string(chi[k]))
+"""
+# optimize PES
+`optPES` will find a local minimum on the PES with Optim package
+minimum location and value are returned
+"""
+function optPES(targetFunc::Function, x0::Array{Float64, 1}, algor;
+    maxTries=5)
+
+    n = 0
+    local minLoc, minVal
+    while n < maxTries
+        result = optimize(x -> targetFunc(x[1], x[2]), x0, algor())
+        minLoc = Optim.minimizer(result)
+        minVal = Optim.minimum(result)
+        if Optim.converged(result)
+            if Optim.iterations(result) == 0
+                println("Warning: Starting point is a stationary point.
+                    Output $minLoc is not necessarily a minimum.")
+            end
+            break
+        else
+            x0 = minLoc
+            n += 1
+            if n > maxTries
+                throw("Hit max number of tries in `optPES`.
+                    Consider using different parameters.")
+            end
+        end
+    end
+    return minLoc, minVal
 end
-grid(true)
-xlabel(L"$\omega_c$")
-ylabel(L"$\omega_b$")
-legend()
-show()
+
+"""
+# find the transition state on the PES
+"""
+# FIXME: 1. optimizer boundaries
+#        2. Lower and upper bounds in interpolation
+function optPES(targetFunc::Function, x0::Array{Float64, 1},
+    x1::Array{Float64, 1}, algor; maxTries=5)
+    local minLoc, minVal, freq, temp
+
+    n = 0
+    xBounds = sort([x0[1], x1[1]])
+    yBounds = sort([x0[2], x1[2]])
+    xi = Vector{Float64}(undef, 2)
+    itp = Spline1D(xBounds, yBounds, k=1)
+    x0[2] -= 0.5
+    x1[2] += 0.5
+    while n < maxTries
+        xi[1] = rand() - 0.5
+        xi[2] = itp(xi[1])
+        println(xi)
+        result = optimize(x -> -targetFunc(x[1], x[2]), x0, x1, xi,
+            Fminbox(algor()))
+        minLoc = Optim.minimizer(result)
+        minVal = Optim.minimum(result)
+        if Optim.converged(result)
+            freq, temp = getImFreq(minLoc)
+            if freq[1] * freq[2] < 0
+                break
+            end
+        else
+            x0 = minLoc
+            n += 1
+            if n > maxTries
+                throw("Hit max number of tries in `optPES`.
+                    Consider using different parameters.")
+            end
+        end
+    end
+    return minLoc, minVal, freq, temp
+end
+
+# omegaOmegaC(chi, omega)
+pho.chi = 0.0
+function extrema(targetFunc, method)
+    # TODO: add try catch stuff
+    # TODO: throw this to a function like optPES
+    maxTries = 5
+    # find the minimum in the first quadrant
+    x0 = rand(Float64, 2)
+end
+
+# result = optimize(x -> -uTotal(x[1], x[2]), [-1.73, -Inf], [1.73, Inf], x0, Fminbox(LBFGS()))
+# println(Optim.minimizer(result), Optim.converged(result), Optim.iterations(result))
+
+minLoc, minVal = optPES(uTotal, [1.0, 0], BFGS)
+out = optPES(uTotal, -minLoc, minLoc, LBFGS)
+println(out)
