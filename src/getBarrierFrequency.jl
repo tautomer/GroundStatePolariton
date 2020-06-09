@@ -5,8 +5,7 @@ using ImportMacros
 using Dierckx: Spline1D
 using DelimitedFiles
 using PyPlot
-using LaTeXStrings
-using IntervalArithmetic, IntervalRootFinding
+# using IntervalArithmetic, IntervalRootFinding
 using Optim, LineSearches
 
 struct constants
@@ -34,7 +33,7 @@ end
 # TODO: should be a better way to initialize these values
 consts = constants(219474.63068, 27.2113961, 3.15775e5)
 mol = molecule(1836, 0.0, 1307.404/consts.au2wn, 0, 0)
-pho = photon(1, 0.2/consts.au2ev, 0, 0, 0) 
+pho = photon(1, 0.04/consts.au2ev, 0, 0, 0) 
 
 # deprecated analytical solution for the imaginary ω
 # μ(R) and origianl ω need to be fitted before hand
@@ -55,12 +54,13 @@ end
 function getImFreq(x0::Array{Float64,1})
     hf = Calculus.hessian(x -> uTotal(x[1], x[2]))
     mat = hf(x0)
-    mat[1, 1] /= mol.mass
-    mat[2, 1] /= sqrt(mol.mass)
-    mat[1, 2] = mat[2, 1]
     # possibly a bug in Calculus package
     # when ω is fairly small, ∂²V/∂q² will be ZERO
     mat[2, 2] = pho.omegaC^2
+    mat_og = deepcopy(mat)
+    mat[1, 1] /= mol.mass
+    mat[2, 1] /= sqrt(mol.mass)
+    mat[1, 2] = mat[2, 1]
     lambda = Calculus.eigvals(mat)
     v = Calculus.eigvecs(mat)
     if lambda[1] < 0
@@ -77,31 +77,31 @@ end
 # FIXME: MEP implementaion is completely wrong
 function printPES(xMin1, xMin2)
     pesFile = string("PES_", pho.chi, ".txt")
-    mepFile = string("MEP_", pho.chi, ".txt")
+    # mepFile = string("MEP_", pho.chi, ".txt")
     pesOut = open(pesFile, "w")
-    mepOut = open(mepFile, "w")
+    # mepOut = open(mepFile, "w")
     @printf(pesOut, "# ω_c = %5.3f\n", pho.omegaC)
     @printf(pesOut, "# χ = %5.3f\n", pho.chi)
     @printf(pesOut, "# minimum of PES (%5.2f, %5.2f)\n", xMin1[1], xMin1[2])
     # @printf(pesOut, "# imaginary frequency %5.2f cm-1, ", freq[1])
     # @printf(pesOut, "original imaginary frequency %5.2f cm-1\n", mol.omegaB*consts.au2wn)
-    qMolMax = 1.5xMin1[1]
-    qPhoMax = 3xMin1[2]
+    qMolMax = 5.0 # 1.5xMin1[1]
+    qPhoMax = 1500.0 # 4xMin1[2]
     qMol = LinRange(-qMolMax, qMolMax, 201)
-    qPho = LinRange(-qPhoMax, qPhoMax, 201)
-    mep = Spline1D([-qMolMax, qMolMax], [-qPhoMax/2, qPhoMax/2], k=1)
+    qPho = LinRange(-qPhoMax, qPhoMax, 1001)
+    # mep = Spline1D([-qMolMax, qMolMax], [-qPhoMax/2, qPhoMax/2], k=1)
     for i in qMol
-        y = mep(i)
-        u = uTotal(i, y)
-        @printf(mepOut, "%5.2f %5.2f %9.6f \n", i, y, u)
-        @printf(mepOut, "\n")
+        # y = mep(i)
+        # u = uTotal(i, y)
+        # @printf(mepOut, "%5.2f %5.2f %9.6f \n", i, y, u)
+        # @printf(mepOut, "\n")
         for j in qPho
             u = uTotal(i, j)
             @printf(pesOut, "%5.2f %5.2f %9.6f \n", i, j, u)
         end
         @printf(pesOut, "\n")
     end
-    close(mepOut) 
+    # close(mepOut) 
     close(pesOut) 
 end
  
@@ -258,6 +258,7 @@ end
 # println(Optim.minimizer(result), Optim.converged(result), Optim.iterations(result))
 
 # read discretized data
+cd("..")
 potentialRaw = readdlm("pes.txt")
 dipoleRaw = readdlm("dm.txt")
 
@@ -277,7 +278,8 @@ lightMatter(qMol, qPho) = sqrt(2*pho.omegaC)*pho.chi*dipole(qMol)*qPho +
 uTotal((qMol, qPho)) = pesMol(qMol) + pesPho(qPho) + lightMatter((qMol, qPho))
 uTotal(qMol, qPho) = pesMol(qMol) + pesPho(qPho) + lightMatter(qMol, qPho)
 
-# minLoc1, minVal = optPES(uTotal, [1.0, 1.0], BFGS)
+pho.chi = 0.02
+minLoc1, minVal = optPES(uTotal, [1.0, 1.0], BFGS)
 # minLoc2, minVal = optPES(uTotal, [-1.0, -1.0], BFGS)
 # out = optPES(uTotal, minLoc1, minLoc2, LBFGS)
 # println(minLoc1, minLoc2, out)
@@ -285,9 +287,10 @@ uTotal(qMol, qPho) = pesMol(qMol) + pesPho(qPho) + lightMatter(qMol, qPho)
 
 # verify we can get correct ω
 # TODO: could be moved to unit tests later
-pho.chi = 0.02
 # pho.omegaC = 500000
-println(getImFreq([0.0, 0.0]))
+# println(getImFreq([0.0, 0.0]))
+# println(solve(pho.omegaC, pho.chi))
+printPES(minLoc1, minLoc1)
 # hf = Calculus.gradient(x -> uTotal(x[1], x[2]))
 # ∇u = ∇(uTotal)
 # println(roots(hf, IntervalBox(-20..20, 2), Newton, 1e-5))

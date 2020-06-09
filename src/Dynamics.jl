@@ -24,10 +24,10 @@ struct Parameters
 end
 
 mutable struct ClassicalParticle <: Particles1D
-    label::String
-    m::Float64
-    x::Float64
-    v::Float64
+    label::Vector{String}
+    m::Vector{Float64}
+    x::Vector{Float64}
+    v::Vector{Float64}
 end
 
 mutable struct ClassicalBathMode <: Bath1D
@@ -42,10 +42,10 @@ mutable struct ClassicalBathMode <: Bath1D
 end
 
 mutable struct QuantumParticle <: ParticlesND
-    label::String
-    m::Float64
-    x::Vector{Float64}
-    v::Vector{Float64}
+    label::Vector{String}
+    m::Vector{Float64}
+    x::Array{Float64, 2}
+    v::Array{Float64, 2}
 end
 
 mutable struct QuantumBathMode <: ParticlesND

@@ -1,0 +1,4 @@
+name = "Polariton"
+uuid = "1db1608f-8937-43a2-854b-e9cd076003e5"
+authors = ["Xinyang Li <soybeanyoung@gmail.com>"]
+version = "0.1.0"
