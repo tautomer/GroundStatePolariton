@@ -154,13 +154,8 @@ function velocitySampling(param::Parameters, p::ParticlesND)
 end
 
 function velocityUpdate(param::Parameters, fc::Tuple, p::Particles1D, b::Bath1D)
-    dt = param.Δt
-    accdt1 = Vector{Float64}(undef, length(fc[1]))
-    accdt2 = Vector{Float64}(undef, length(fc[2]))
-    @. accdt1 = 0.5 * fc[1] / p.m * dt
-    @. accdt2 = 0.5 * fc[2] / b.m * dt
-    @. p.v += accdt1
-    @. b.v += accdt2
+    @. p.v += 0.5 * fc[1] / p.m * param.Δt 
+    @. b.v += 0.5 * fc[2] / b.m * param.Δt 
     return p, b
 end
 
@@ -275,7 +270,7 @@ end
 using Calculus: gradient
 using StatProfilerHTML
 using DelimitedFiles
-using Dierckx
+using Interpolations
 using Printf
 using Random
 using WHAM
@@ -320,13 +315,19 @@ end
 function getPES(pes="pes.txt", dm="dm.txt")
     potentialRaw = readdlm(pes)
     dipoleRaw = readdlm(dm)
-    pesMol = Spline1D(potentialRaw[:, 1], potentialRaw[:, 2])
-    dipole = Spline1D(dipoleRaw[:, 1], dipoleRaw[:, 2])
+    xrange = LinRange(potentialRaw[1, 1], potentialRaw[end, 1],
+        length(potentialRaw[:, 1]))
+    pesMol = CubicSplineInterpolation(xrange, potentialRaw[:, 2],
+        extrapolation_bc=Line())
+    xrange = LinRange(dipoleRaw[1, 1], dipoleRaw[end, 1],
+        length(dipoleRaw[:, 1]))
+    dipole = CubicSplineInterpolation(xrange, dipoleRaw[:, 2],
+        extrapolation_bc=Line())
     return pesMol, dipole
 end
 
-function constructPotential(pesMol::Spline1D, dipole::Spline1D,
-    omegaC::AbstractFloat, chi::AbstractFloat)
+function constructPotential(pesMol::T, dipole::T, omegaC::AbstractFloat,
+    chi::AbstractFloat) where T <: AbstractExtrapolation
     # photon DOF potential
     pesPho(qPho) = 0.5 * omegaC^2 * qPho^2
     # light-mater interaction
@@ -338,7 +339,6 @@ function constructPotential(pesMol::Spline1D, dipole::Spline1D,
 end
 
 function kappa(temp, nTraj, ωc, chi)
-    println(temp*au2kelvin)
     nSteps = 1500
 
     param, mol, bath, f, uTotal = initialize(temp, freqCutoff, eta, ωc, chi)
@@ -485,9 +485,9 @@ pesMol, dipole = getPES()
 # const pesMol, dipole = getPES("pes_low.txt", "dm_low.txt")
 # pesMol, dipole = getPES("pes_prx.txt", "dm_prx.txt")
 # cd("wc_chi")
-# cd("chk")
-cd("1D")
-xbin, pmf = umbrellaSampling(temp, 100, 0.08, [-3.5, 3.5], 0.2, 0.2)
+cd("chk")
+# cd("1D")
+# xbin, pmf = umbrellaSampling(temp, 100, 0.08, [-3.5, 3.5], 0.2, 0.2)
 # using Calculus: second_derivative
 # using Optim, LineSearches
 # 
@@ -521,6 +521,21 @@ xbin, pmf = umbrellaSampling(temp, 100, 0.08, [-3.5, 3.5], 0.2, 0.2)
 #      @time kappa(temp, 1, 0.2, 0.2)
 #      @time kappa(temp, 5000, 0.2, 0.2)
 #  end
+
+# chi = [0.2]
+# omegac = vcat([0.0, 0.0001, 0.001, 0.01], collect(0.04:0.04:0.2), collect(0.4:0.2:1.0), collect(1.0:1.0:5.0))
+# iter = vec([(i,j) for i in omegac, j in chi])
+using StatProfilerHTML
+kappa(temp, 1, 0.2, 0.2)
+@profilehtml @time kappa(temp, 5000, 0.2, 0.2)
+# @time Threads.@threads for i in iter 
+#     flnm = string("fs_", i[1], "_", i[2], ".txt")
+#     if isfile(flnm)
+#         println(flnm, " already exists")
+#         continue
+#     end
+#     kappa(temp, nTraj, i[1], i[2]) 
+# end
 
 # pesMol, dipole = getPES()
 # chi = 0.02
