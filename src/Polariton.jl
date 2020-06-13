@@ -1,3 +1,4 @@
+# TODO: use ForwardDiff.gradient! instead of Calculus.gradient
 module Auxiliary
 """
     Some physical constants useful to the simulation
@@ -84,8 +85,6 @@ end
 
 module Dynamics
 using Calculus
-using LinearAlgebra: dot
-using Dierckx
 using Random
 using StaticArrays
 
@@ -197,10 +196,6 @@ end
 function force(f::Function, q, b::Bath1D)
     fp = f(q)
     fb = Vector{Float64}(undef, b.n)
-    # tmp = Vector{Float64}(undef, b.n)
-    # @. tmp = b.c_mω2 * b.x - q[1]
-    # @. fb = b.mω2 * tmp
-    # fp[1] -= sum(b.c .* tmp)
     for i in 1:b.n
         tmp = b.c_mω2[i] * q[1] - b.x[i]
         fb[i] = b.mω2[i] * tmp
@@ -321,9 +316,8 @@ function getPES(pes="pes.txt", dm="dm.txt")
         extrapolation_bc=Line())
     xrange = LinRange(dipoleRaw[1, 1], dipoleRaw[end, 1],
         length(dipoleRaw[:, 1]))
-    dipole = CubicSplineInterpolation(xrange, dipoleRaw[:, 2],
-        extrapolation_bc=Line())
-    return pesMol, dipole
+    dipole = CubicSplineInterpolation(xrange, dipoleRaw[:, 2], extrapolation_bc=Line())
+           return pesMol, dipole
 end
 
 function constructPotential(pesMol::T, dipole::T, omegaC::AbstractFloat,
@@ -393,11 +387,12 @@ function printKappa(fs, ωc, chi, dt)
     flnm = string("fs_", ωc, "_", chi, ".txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
-    @printf(fsOut, "# ω_c=%5.3f,χ=%6.4f \n", ωc, chi)
+    @printf(fsOut, "# ω_c=%7.3e,χ=%6.4g \n", ωc, chi)
     for i in 1:length(fs)
-        @printf(fsOut, "%5.2f %5.3f\n", i*dt*2.4189e-2, fs[i])
+        @printf(fsOut, "%5.2f %5.3g\n", (i-1)*dt*2.4189e-2, fs[i])
     end
     close(fsOut)
+    println("Results written to file: $fsOut")
 end
 
 function umbrellaSetup(temp::T, nw::Integer, ks::T, bound::Vector{T}) where T <: AbstractFloat
@@ -484,9 +479,8 @@ pesMol, dipole = getPES()
 # param, label, mass, bath = initialize(temp, freqCutoff, eta)
 # const pesMol, dipole = getPES("pes_low.txt", "dm_low.txt")
 # pesMol, dipole = getPES("pes_prx.txt", "dm_prx.txt")
-# cd("wc_chi")
-cd("chk")
-# cd("1D")
+# cd("chi_wc")
+cd("1D")
 # xbin, pmf = umbrellaSampling(temp, 100, 0.08, [-3.5, 3.5], 0.2, 0.2)
 # using Calculus: second_derivative
 # using Optim, LineSearches
@@ -523,20 +517,20 @@ cd("chk")
 #  end
 
 # chi = [0.2]
-# omegac = vcat([0.0, 0.0001, 0.001, 0.01], collect(0.04:0.04:0.2), collect(0.4:0.2:1.0), collect(1.0:1.0:5.0))
+omegac = vcat([0.001, 0.005, 0.01], collect(0.04:0.04:0.2), collect(0.4:0.2:1.0), collect(1.0:1.0:4.0))
+# omegac = collect(1.0:3.0)
+# iter = [(i,0.1i^1.5) for i in omegac]
+iter = [(i,0.05i) for i in omegac]
+# iter = [(0.16,0.0064), (0.36,0.0216)]
 # iter = vec([(i,j) for i in omegac, j in chi])
-using StatProfilerHTML
-kappa(temp, 1, 0.2, 0.2)
-@profilehtml @time kappa(temp, 5000, 0.2, 0.2)
-# @time Threads.@threads for i in iter 
-#     flnm = string("fs_", i[1], "_", i[2], ".txt")
-#     if isfile(flnm)
-#         println(flnm, " already exists")
-#         continue
-#     end
-#     kappa(temp, nTraj, i[1], i[2]) 
-# end
-
+@time Threads.@threads for i in iter 
+    flnm = string("fs_", i[1], "_", i[2], ".txt")
+    # if isfile(flnm)
+    #     println(flnm, " already exists")
+    #     continue
+    # end
+    kappa(temp, 5000, i[1], i[2]) 
+end
 # pesMol, dipole = getPES()
 # chi = 0.02
 # wc = vcat([0.001, 0.005, 0.01, 0.05, 0.1], collect(0.11:0.01:0.2), collect(0.3:0.1:0.9), collect(1.0:10.0))
