@@ -146,11 +146,13 @@ mutable struct QuantumBathMode <: ParticlesND
 end
 
 function velocitySampling!(p::ClassicalBathMode, rng::AbstractRNG)
-    p.v = p.σ * Random.randn!(rng, p.v)
+    Random.randn!(rng, p.v)
+    p.v .*= p.σ
 end
 
 function velocitySampling!(p::ClassicalParticle, rng::AbstractRNG)
-    p.v = p.σ .* Random.randn!(rng, p.v)
+    Random.randn!(rng, p.v)
+    p.v .*= p.σ
 end
 
 function velocitySampling(rng::AbstractRNG, param::Parameters, p::ParticlesND)
@@ -171,7 +173,7 @@ function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
     f::Function; cnstr=true)
 
     velocityUpdate!(p, b, param)
-    @. p.x[2:end] += p.v[2:end] * param.Δt
+    @. p.x += p.v * param.Δt
     p.x[1] = 0.0
     @. b.x += b.v * param.Δt
     force!(p, b, f)
@@ -199,7 +201,7 @@ function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
 end
 
 function force!(p::Particles1D, b::Bath1D, f::Function)
-    p.f .= f(p.x)
+    p.f[:] = f(p.x)
     @simd for i in 1:b.n
         tmp = b.c_mω2[i] * p.x[1] - b.x[i]
         b.f[i] = b.mω2[i] * tmp
