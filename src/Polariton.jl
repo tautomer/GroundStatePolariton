@@ -1,4 +1,3 @@
-# TODO: use FiniteDiff instead of Calculus.gradient
 module Auxiliary
 """
     Some physical constants useful to the simulation
@@ -84,7 +83,7 @@ end
 end
 
 module Dynamics
-using Calculus
+using FiniteDiff: finite_difference_gradient!, GradientCache
 using Random
 using StaticArrays
 
@@ -162,31 +161,29 @@ function velocitySampling(rng::AbstractRNG, param::Parameters, p::ParticlesND)
 end
 
 function velocityUpdate!(p::Particles1D, b::Bath1D, param::Parameters)
-    for i in eachindex(p.v)
-        p.v[i] += 0.5 * param.Δt * p.f[i] / p.m[i] 
-    end
+    @. p.v += 0.5 * param.Δt * p.f / p.m 
     @. b.v += 0.5 * b.f / b.m * param.Δt 
 end
 
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    f::Function; cnstr=true)
+    f::Function, cache::GradientCache; cnstr=true)
 
     velocityUpdate!(p, b, param)
     @. p.x += p.v * param.Δt
     p.x[1] = 0.0
     @. b.x += b.v * param.Δt
-    force!(p, b, f)
+    force!(p, b, f, cache)
     velocityUpdate!(p, b, param)
 end
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    f::Function)
+    f::Function, cache::GradientCache)
 
     velocityUpdate!(p, b, param)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
-    force!(p, b, f)
+    force!(p, b, f, cache)
     velocityUpdate!(p, b, param)
 end
 
@@ -200,8 +197,9 @@ function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
     velocityUpdate!(p, b, param)
 end
 
-function force!(p::Particles1D, b::Bath1D, f::Function)
-    p.f[:] = f(p.x)
+function force!(p::Particles1D, b::Bath1D, f::Function, cache::GradientCache)
+    finite_difference_gradient!(p.f, f, p.x, cache)
+    # p.f[:] = f(p.x)
     @simd for i in 1:b.n
         tmp = b.c_mω2[i] * p.x[1] - b.x[i]
         b.f[i] = b.mω2[i] * tmp
@@ -283,6 +281,7 @@ using Printf
 using Random
 using WHAM
 using Statistics: mean, varm
+using FiniteDiff: GradientCache
 using ..Dynamics
 using ..Auxiliary
 using .Auxiliary.Constants: au2wn, au2ev, au2kelvin, au2kcal, amu2au, au2fs
@@ -309,7 +308,8 @@ function initialize(temp, freqCutoff, eta, ωc, chi)
     if param.nParticle - param.nMol == 1 && chi != 0.0
         push!(label, "photon")
         push!(mass, 1.0)
-        f = gradient(x -> -uTotal(x))
+        f(x) = -uTotal(x)
+        # f = gradient(x -> -uTotal(x))
         # tmp = Auxiliary.normalModeAnalysis(uTotal, zeros(2), omegaC)
         # axis = tmp[2][:, 1]
         # @. axis *= sqrt(mass)
@@ -319,7 +319,8 @@ function initialize(temp, freqCutoff, eta, ωc, chi)
     end
     mol = Dynamics.ClassicalParticle(label, mass, sqrt.(temp./mass),
         similar(mass), similar(mass), similar(mass))
-    return param, mol, bath, f, uTotal
+    cache = GradientCache(similar(mass), similar(mass))
+    return param, mol, bath, f, cache, uTotal
 end
 
 function getPES(pes="pes.txt"::String, dm="dm.txt"::String)
@@ -341,7 +342,7 @@ function constructPotential(pesMol::T, dipole::T, omegaC::AbstractFloat,
     kPho = 0.5 * omegaC^2
     couple = sqrt(2/omegaC^3) * chi
     # total potential
-    function uTotal(x::AbstractVector{T}) where T <: AbstractFloat
+    @inline function uTotal(x::AbstractVector{T}) where T <: AbstractFloat
         return @inbounds @fastmath pesMol(x[1]) +
             kPho * (x[2] + couple*dipole(x[1]))^2
     end
@@ -353,7 +354,7 @@ function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
     nSteps = 1500
     rng = Random.seed!(1233+Threads.threadid())
 
-    param, mol, bath, f, uTotal = initialize(temp, freqCutoff, eta, ωc, chi)
+    param, mol, bath, f, cache, uTotal = initialize(temp, freqCutoff, eta, ωc, chi)
 
     fs0 = 0.0
     fs = zeros(nSteps+1)
@@ -363,27 +364,27 @@ function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
     for i in 1:nTraj
         # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
-        mol.x = copy(x0)
         Dynamics.velocitySampling!(mol, rng)
         Dynamics.velocitySampling!(bath, rng)
-        bath.x = copy(xb0)
-        Dynamics.force!(mol, bath, f)
+        copy!(mol.x, x0)
+        copy!(bath.x, xb0)
+        Dynamics.force!(mol, bath, f, cache)
         for j in 1:1000
-            Dynamics.velocityVelert!(mol, bath, param, f, cnstr=true)
+            Dynamics.velocityVelert!(mol, bath, param, f, cache, cnstr=true)
             if j % 50 == 0
                 Dynamics.velocitySampling!(mol, rng)
                 Dynamics.velocitySampling!(bath, rng)
             end
         end
-        x0 = copy(mol.x)
-        xb0 = copy(bath.x)
+        copy!(x0, mol.x)
+        copy!(xb0, bath.x)
         v0 = mol.v[1] 
         q .= 0.0
         q[1] = v0
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
         for j in 1:nSteps
-            Dynamics.velocityVelert!(mol, bath, param, f)
+            Dynamics.velocityVelert!(mol, bath, param, f, cache)
             q[j+1] = mol.x[1]
             # println(j, " ", mol.v[1], " ", q[j+1], " ", 0.5*amu2au*mol.v[1]^2+pesMol(mol.x[1]))
             # println(j, " ", mol.x[1], " ", q[j+1])
