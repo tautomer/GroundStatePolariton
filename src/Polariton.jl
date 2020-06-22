@@ -30,7 +30,7 @@ function normalModeAnalysis(u::Function, x0::Array{Float64,1}, omegaC::Float64)
     mat = hf(x0)
     # possibly a bug in Calculus package
     # when ω is fairly small, ∂²V/∂q² will be ZERO
-    mat_og = deepcopy(mat)
+    mat_og = copy(mat)
     mat[1, 1] /= amu2au
     mat[2, 1] /= sqrt(amu2au)
     mat[1, 2] = mat[2, 1]
@@ -109,6 +109,7 @@ end
 mutable struct ClassicalParticle <: Particles1D
     label::Vector{String}
     m::Vector{Float64}
+    σ::Vector{Float64}
     x::Vector{Float64}
     v::Vector{Float64}
 end
@@ -116,6 +117,7 @@ end
 mutable struct ClassicalBathMode <: Bath1D
     n::Int16
     m::Float64
+    σ::Float64
     ω::Vector{Float64}
     c::Vector{Float64}
     mω2::Vector{Float64}
@@ -141,62 +143,64 @@ mutable struct QuantumBathMode <: ParticlesND
     v::Array{Float64, 2}
 end
 
-function velocitySampling(param::Parameters, p::Particles1D)
-    tmp = @. sqrt(param.temperature / p.m)
-    return Random.randn(length(p.v)) .* tmp
+function velocitySampling!(p::ClassicalBathMode, rng::AbstractRNG)
+    p.v = p.σ * Random.randn!(rng, p.v)
 end
 
-function velocitySampling(param::Parameters, p::ParticlesND)
+function velocitySampling!(p::ClassicalParticle, rng::AbstractRNG)
+    p.v = p.σ .* Random.randn!(rng, p.v)
+end
+
+function velocitySampling(rng::AbstractRNG, param::Parameters, p::ParticlesND)
     n = param.beadMol
-    v = Random.randn(n) * sqrt(n * param.temperature / p.m)
+    v = Random.randn(rng, n) * sqrt(n * param.temperature / p.m)
     return v
 end
 
-function velocityUpdate(param::Parameters, fc::Tuple, p::Particles1D, b::Bath1D)
+function velocityUpdate!(p::Particles1D, b::Bath1D, param::Parameters, fc::Tuple)
     @. p.v += 0.5 * fc[1] / p.m * param.Δt 
     @. b.v += 0.5 * fc[2] / b.m * param.Δt 
-    return p, b
 end
 
 
-function velocityVelert(param::Parameters, p::Particles1D, b::Bath1D,
+function velocityVelert(p::Particles1D, b::Bath1D, param::Parameters,
     fc::Tuple, f::Function; cnstr=true)
 
-    p, b = velocityUpdate(param, fc, p, b)
+    velocityUpdate!(p, b, param, fc)
     @. p.x[2:end] += p.v[2:end] * param.Δt
     p.x[1] = 0.0
     @. b.x += b.v * param.Δt
     fc = force(f, p.x, b)
-    mol, bath = velocityUpdate(param, fc, p, b)
-    return p, b, fc
+    velocityUpdate!(p, b, param, fc)
+    return fc
 end
 
-function velocityVelert(param::Parameters, p::Particles1D, b::Bath1D,
+function velocityVelert(p::Particles1D, b::Bath1D, param::Parameters,
     fc::Tuple, f::Function)
 
-    p, b = velocityUpdate(param, fc, p, b)
+    velocityUpdate!(p, b, param, fc)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
     fc = force(f, p.x, b)
-    mol, bath = velocityUpdate(param, fc, p, b)
-    return p, b, fc
+    velocityUpdate!(p, b, param, fc)
+    return fc
 end
 
-function velocityVelert(param::Parameters, p::Particles1D, b::Bath1D,
+function velocityVelert(p::Particles1D, b::Bath1D, param::Parameters,
     fc::Tuple, f::Function, ks::T, x0::T) where T <: AbstractFloat
 
-    p, b = velocityUpdate(param, fc, p, b)
+    velocityUpdate!(p, b, param, fc)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
     fc = force(f, p.x, b, ks, x0)
-    mol, bath = velocityUpdate(param, fc, p, b)
-    return p, b, fc
+    velocityUpdate!(p, b, param, fc)
+    return fc
 end
 
 function force(f::Function, q, b::Bath1D)
     fp = f(q)
     fb = Vector{Float64}(undef, b.n)
-    for i in 1:b.n
+    @simd for i in 1:b.n
         tmp = b.c_mω2[i] * q[1] - b.x[i]
         fb[i] = b.mω2[i] * tmp
         fp[1] -= b.c[i] * tmp
@@ -239,36 +243,34 @@ function projection(x::Array, axis::Vector{Float64})
     end
 end
 
-function heaviSide(x)
-    if x >= 0
-        h = 1
+function heaviSide(x::AbstractFloat)
+    if x >= 0.0
+        h = 1.0
     else
-        h = 0
+        h = 0.0
     end
     return h
 end
 
-function fluxSide(corrFS, v0, q::Float64)
-    side = heaviSide(q)
-    corrFS += v0 * side
+function fluxSide(corrFS::T, v0::T, q::T) where T <: AbstractFloat
+    corrFS += v0 * heaviSide(q)
     return corrFS
 end
 
-function fluxSide(corrFS, v0, q::Array)
-    side = heaviSide.(q)
-    corrFS += v0 * side
-    return corrFS
+function fluxSide!(corrFS::AbstractArray{T}, v0::T, q::AbstractArray{T}
+    ) where T <: AbstractFloat
+    @. corrFS += v0 * heaviSide(q)
 end
 
 end
 
 using Calculus: gradient
-using StatProfilerHTML
 using DelimitedFiles
 using Interpolations
 using Printf
 using Random
 using WHAM
+using Statistics: mean, varm
 using ..Dynamics
 using ..Auxiliary
 using .Auxiliary.Constants: au2wn, au2ev, au2kelvin, au2kcal, amu2au, au2fs
@@ -278,7 +280,8 @@ const corr = CorrelationFunctions
 
 function initialize(temp, freqCutoff, eta, ωc, chi)
     ωc /= au2ev
-    param = Dynamics.Parameters(temp, 8.0, 2, 1, 15, 1, 1, 1)
+    temp /= au2kelvin
+    param = Dynamics.Parameters(temp, 4.0, 2, 1, 15, 1, 1, 1)
     label = repeat(["mol"], param.nMol)
     mass = repeat([amu2au], param.nMol)
     ω = Vector{Float64}(undef, param.nBath)
@@ -288,13 +291,13 @@ function initialize(temp, freqCutoff, eta, ωc, chi)
     c = ω * sqrt(2eta * amu2au * freqCutoff / param.nBath / pi)
     mω2 = ω.^2 .* amu2au
     c_mω2 = c ./ mω2
-    bath = Dynamics.ClassicalBathMode(param.nBath, amu2au, ω, c, mω2, c_mω2,
-        zeros(param.nBath), zeros(param.nBath))
+    bath = Dynamics.ClassicalBathMode(param.nBath, amu2au, sqrt(temp/amu2au),
+        ω, c, mω2, c_mω2, similar(ω), similar(ω))
     uTotal = constructPotential(pesMol, dipole, ωc, chi)
     if param.nParticle - param.nMol == 1 && chi != 0.0
         push!(label, "photon")
         push!(mass, 1.0)
-        f = gradient(x -> -uTotal(x[1], x[2]))
+        f = gradient(x -> -uTotal(x))
         # tmp = Auxiliary.normalModeAnalysis(uTotal, zeros(2), omegaC)
         # axis = tmp[2][:, 1]
         # @. axis *= sqrt(mass)
@@ -302,8 +305,8 @@ function initialize(temp, freqCutoff, eta, ωc, chi)
     else
         f = gradient(x -> -pesMol(x[1]))
     end
-    mol = Dynamics.ClassicalParticle(label, mass, zeros(length(mass)),
-        zeros(length(mass)))
+    mol = Dynamics.ClassicalParticle(label, mass, sqrt.(temp./mass),
+        similar(mass), similar(mass))
     return param, mol, bath, f, uTotal
 end
 
@@ -312,28 +315,30 @@ function getPES(pes="pes.txt", dm="dm.txt")
     dipoleRaw = readdlm(dm)
     xrange = LinRange(potentialRaw[1, 1], potentialRaw[end, 1],
         length(potentialRaw[:, 1]))
-    pesMol = CubicSplineInterpolation(xrange, potentialRaw[:, 2],
+    pesMol = LinearInterpolation(xrange, potentialRaw[:, 2],
         extrapolation_bc=Line())
     xrange = LinRange(dipoleRaw[1, 1], dipoleRaw[end, 1],
         length(dipoleRaw[:, 1]))
-    dipole = CubicSplineInterpolation(xrange, dipoleRaw[:, 2], extrapolation_bc=Line())
-           return pesMol, dipole
+    dipole = LinearInterpolation(xrange, dipoleRaw[:, 2],
+        extrapolation_bc=Line())
+    return pesMol, dipole
 end
 
 function constructPotential(pesMol::T, dipole::T, omegaC::AbstractFloat,
     chi::AbstractFloat) where T <: AbstractExtrapolation
-    # photon DOF potential
-    pesPho(qPho) = 0.5 * omegaC^2 * qPho^2
-    # light-mater interaction
-    lightMatter(qMol, qPho) = sqrt(2*omegaC)*chi*dipole(qMol)*qPho +
-        chi^2*dipole(qMol)^2/omegaC
+    kPho = 0.5 * omegaC^2
+    couple = sqrt(2/omegaC^3) * chi
     # total potential
-    uTotal(qMol, qPho) = pesMol(qMol) + pesPho(qPho) + lightMatter(qMol, qPho)
+    function uTotal(x::AbstractVector{T}) where T <: AbstractFloat
+        return @inbounds @fastmath pesMol(x[1]) +
+            kPho * (x[2] + couple*dipole(x[1]))^2
+    end
     return uTotal
 end
 
-function kappa(temp, nTraj, ωc, chi)
-    nSteps = 1500
+function computeKappa(temp, nTraj, ωc, chi)
+    nSteps = 3000
+    rng = Random.seed!(1233+Threads.threadid())
 
     param, mol, bath, f, uTotal = initialize(temp, freqCutoff, eta, ωc, chi)
 
@@ -345,27 +350,28 @@ function kappa(temp, nTraj, ωc, chi)
     for i in 1:nTraj
         # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
-        mol.x = deepcopy(x0)
-        mol.v = Dynamics.velocitySampling(param, mol)
-        bath.v = Dynamics.velocitySampling(param, bath)
-        bath.x = deepcopy(xb0)
+        mol.x = copy(x0)
+        Dynamics.velocitySampling!(mol, rng)
+        Dynamics.velocitySampling!(bath, rng)
+        bath.x = copy(xb0)
         fc = Dynamics.force(f, mol.x, bath)
         for j in 1:1000
-            mol, bath, fc = Dynamics.velocityVelert(param, mol, bath, fc, f,
+            fc = Dynamics.velocityVelert(mol, bath, param, fc, f,
                 cnstr=true)
             if j % 50 == 0
-                mol.v = Dynamics.velocitySampling(param, mol)
-                bath.v = Dynamics.velocitySampling(param, bath)
+                Dynamics.velocitySampling!(mol, rng)
+                Dynamics.velocitySampling!(bath, rng)
             end
         end
-        x0 = deepcopy(mol.x)
-        xb0 = deepcopy(bath.x)
+        x0 = copy(mol.x)
+        xb0 = copy(bath.x)
         v0 = mol.v[1] 
         q .= 0.0
+        q[1] = v0
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
         for j in 1:nSteps
-            mol, bath, fc = Dynamics.velocityVelert(param, mol, bath, fc, f)
+            fc = Dynamics.velocityVelert(mol, bath, param, fc, f)
             q[j+1] = mol.x[1]
             # println(j, " ", mol.v[1], " ", q[j+1], " ", 0.5*amu2au*mol.v[1]^2+pesMol(mol.x[1]))
             # println(j, " ", mol.x[1], " ", q[j+1])
@@ -375,24 +381,25 @@ function kappa(temp, nTraj, ωc, chi)
             # end
         end
         # close(output)
-        fs = corr.fluxSide(fs, v0, q)
+        corr.fluxSide!(fs, v0, q)
     end
 
-    fs /= fs0
-    printKappa(fs, ωc, chi, param.Δt)
+    return printKappa(fs, fs0, ωc, chi, temp, param.Δt)
 end
 
-function printKappa(fs, ωc, chi, dt)
-    fs[1] = 1.0
-    flnm = string("fs_", ωc, "_", chi, ".txt")
+function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
+    dt::T) where T <: AbstractFloat
+    fs /= fs0
+    flnm = string("fs_", ωc, "_", chi, "_", temp, "_newvs.txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
     @printf(fsOut, "# ω_c=%7.3e,χ=%6.4g \n", ωc, chi)
     for i in 1:length(fs)
-        @printf(fsOut, "%5.2f %5.3g\n", (i-1)*dt*2.4189e-2, fs[i])
+        @printf(fsOut, "%5.2f %11.8g\n", (i-1)*dt*2.4189e-2, fs[i])
     end
     close(fsOut)
-    println("Results written to file: $fsOut")
+    println("Results written to file: $flnm")
+    return fs
 end
 
 function umbrellaSetup(temp::T, nw::Integer, ks::T, bound::Vector{T}) where T <: AbstractFloat
@@ -408,58 +415,67 @@ function umbrellaSetup(temp::T, nw::Integer, ks::T, bound::Vector{T}) where T <:
         2. Use more windows.
         3. Use umbrellia integration instead of WHAM for unbiasing.""")
     end
-    xi = [ bound[1] + (i-0.5)*Δwindow for i in 1:nw]
+    xi = [bound[1] + (i-0.5)*Δwindow for i in 1:nw]
     return xi
 end
 
 function umbrellaSampling(temp::T, nw::Integer, ks::T, bound::Vector{T}, ωc::T, chi::T
     ) where T <: AbstractFloat
-    nSteps = 50000000
-    bound = [-3.5, 3.5]
-    xi = umbrellaSetup(temp, nw, ks, bound)
+    nSteps = 10000000
+    nSkip = 10
+    t = temp / au2kelvin
+    nCollected = floor(Int64, nSteps/nSkip)
+    xi = umbrellaSetup(t, nw, ks, bound)
     param, mol, bath, f, uTotal = initialize(temp, freqCutoff, eta, ωc, chi)
-    wham_prarm, wham_array =  WHAM.setup(temp, nw, bound, xi, ks/2.0, nBin=10*nw)
+    wham_prarm, wham_array, ui_array =  WHAM.setup(t, nw, bound, xi, ks/2.0, nBin=10*nw+1)
 
-    cv = Vector{Float64}(undef, nSteps)
+    rng = Random.seed!(114514+Threads.threadid())
+    cv = Vector{Float64}(undef, nCollected)
     for i in 1:nw
         # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
         x0 = xi[i]
         mol.x .= 0.0 
-        mol.v = Dynamics.velocitySampling(param, mol)
-        bath.v = Dynamics.velocitySampling(param, bath)
+        mol.v = Dynamics.velocitySampling(rng, param, mol)
+        bath.v = Dynamics.velocitySampling(rng, param, bath)
         bath.x = Random.randn(bath.n)
         fc = Dynamics.force(f, mol.x, bath)
         for j in 1:1000
             mol, bath, fc = Dynamics.velocityVelert(param, mol, bath, fc, f,
                 ks, x0)
             if j % 25 == 0
-                mol.v = Dynamics.velocitySampling(param, mol)
-                bath.v = Dynamics.velocitySampling(param, bath)
+                mol.v = Dynamics.velocitySampling(rng, param, mol)
+                bath.v = Dynamics.velocitySampling(rng, param, bath)
             end
         end
         # println(output, "# ", v0)
-        for j in 1:nSteps
-            mol, bath, fc = Dynamics.velocityVelert(param, mol, bath, fc, f,
-                ks, x0)
-            cv[j] = mol.x[1]
-            if j % 25 == 0
-                mol.v = Dynamics.velocitySampling(param, mol)
-                bath.v = Dynamics.velocitySampling(param, bath)
+        for j in 1:nCollected
+            for k in 1:nSkip
+                mol, bath, fc = Dynamics.velocityVelert(param, mol, bath, fc,
+                f, ks, x0)
             end
+            cv[j] = mol.x[1]
+            # if j % 25 == 0
+                mol.v = Dynamics.velocitySampling(rng, param, mol)
+                bath.v = Dynamics.velocitySampling(rng, param, bath)
+            # end
             # println(j, " ", mol.v[1], " ", q[j+1], " ", 0.5*amu2au*mol.v[1]^2+pesMol(mol.x[1]))
             # println(j, " ", mol.x[1], " ", q[j+1])
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", uTotal(mol.x[1], mol.x[2]), " ", q[j+1])
         end
-        wham_array = WHAM.biasedDistibution(cv, i, wham_prarm, wham_array)
+        # wham_array = WHAM.biasedDistibution(cv, i, wham_prarm, wham_array)
+        println("Processing window number $i")
+        ui_array.mean[i], ui_array.var[i] = WHAM.windowStats(cv)
         # close(output)
     end
 
-    xbin, pmf = @time WHAM.unbias(wham_prarm, wham_array)
-    flnm = string("pmf_", ωc, "_", chi, ".txt")
+    # xbin, pmf = @time WHAM.unbias(wham_prarm, wham_array)
+    xbin, pmf = @time WHAM.integration(wham_prarm, ui_array)
+    flnm = string("pmf_", ωc, "_", chi, "_", temp, ".txt")
     open(flnm, "w") do io
         @printf(io, "# ω_c=%5.3f,χ=%6.4f \n", ωc, chi)
         @printf(io, "# Thread ID: %3d\n", Threads.threadid())
+        @printf(io, "# Physical temperature: %6.1f\n", temp)
         @printf(io, "# Number of windows: %5d\n", nw)
         @printf(io, "# Number of bins: %5d\n", wham_prarm.nBin)
         @printf(io, "# Number of points per window: %11d\n", nSteps)
@@ -469,19 +485,78 @@ function umbrellaSampling(temp::T, nw::Integer, ks::T, bound::Vector{T}, ωc::T,
     return xbin, pmf
 end
 
-Random.seed!(1234)
-nTraj = 5000
-temp = 300.0 / au2kelvin
-freqCutoff = 500.0 / au2wn
-eta = 4.0 * amu2au * freqCutoff
+function rate(out::IOStream, fs::AbstractVector{T}, tst::T, beta::T) where T <: AbstractFloat
+    kappa = mean(fs[end-50:end])
+    dev = varm(fs[end-50:end], kappa, corrected=false)    
+    if dev >= 1e-6
+        flag = "flagged"
+    else
+        flag = ""
+    end
+    kau = kappa * tst
+    ksi = kau / au2fs * 1e15
+    logkau = log(kau)
+    logkEyring = log(kau*beta)
+    logksi = log(ksi)
+    temp = au2kelvin / beta
+    invtemp = beta /au2kelvin
+    @printf(out, "%7.5f %9.5f %9.5f %7.2f %9.5f %11.8g %11.8g %8.6g %11.8g %s\n",
+        invtemp, logkau, logkEyring, temp, logksi, kau, ksi, kappa, tst, flag)
+    return kau
+end
+
+const freqCutoff = 500.0 / au2wn
+const eta = 4.0 * amu2au * freqCutoff
 cd("..")
-pesMol, dipole = getPES()
+const pesMol, dipole = getPES()
+# pesMol, dipole = getPES("pes_lowres.txt", "dm_lowres.txt")
+
+function temperatureDependency()
+    cd("tempDep")
+    nTraj = 10000
+    temp = collect(233.0:15.0:413.0)
+    # temp = [233.0]
+    # omegac = vcat(collect(0.01:0.01:0.03), collect(0.1:0.1:0.3))
+    omegac = [0.16]
+    # chi = [0.001, 0.01, 0.05, 0.1, 0.2, 0.3]
+    # iter = vcat([(0.16, 0.16i) for i in chi])
+    # iter = reduce(vcat, [[(i,0.1i), (i,0.3i)] for i in omegac])
+    iter = [(0.16, 0.0)]
+    cd("tmp")
+    computeKappa(300.0, 1, omegac[1], omegac[1])
+    cd("..")
+
+    pmf = readdlm("pmf_0.2_0.0_300.0.txt", comments=true)
+    # xbin, pmf = umbrellaSampling(temp[end], 100, 0.15, [-3.5, 3.5], 0.2, 0.0)
+    Threads.@threads for i in iter
+        ωc = i[1]
+        χ = i[2]
+        if length("$χ") >= 10
+            χ -= eps(χ)
+        end
+        flnm = string("rate_", ωc, "_", χ, ".txt")
+        output = open(flnm, "w")
+        @printf(output, "# ω_c=%5.3f,χ=%6.4f \n", ωc, χ)
+        @printf(output, "# Thread ID: %3d\n", Threads.threadid())
+        @printf(output, "# Warning: check κ mannually if line ends with 'flagged'\n")
+        @printf(output, "# 1/T    log k/au    log k/T     T      log k/s     k(au)       k(s^-1)      κ        TST(au)     Flag\n")
+        @time for j in temp
+            println("Currently running ωc = $ωc, χ = $χ, T = $j")
+            fs = computeKappa(j, nTraj, ωc, χ)
+            tst = WHAM.TSTRate(pmf[:, 1], pmf[:, 2], au2kelvin/j, amu2au)
+            k = rate(output, fs, tst, au2kelvin/j)
+        end
+    end
+end
+
+# temperatureDependency()
+cd("test")
+computeKappa(300.0, 1, 0.05, 0.01)
+@time computeKappa(300.0, 5000, 0.05, 0.01)
+# xbin, pmf = umbrellaSampling(350.0, 100, 0.15, [-3.5, 3.5], 0.16, 0.008)
 # param, label, mass, bath = initialize(temp, freqCutoff, eta)
 # const pesMol, dipole = getPES("pes_low.txt", "dm_low.txt")
 # pesMol, dipole = getPES("pes_prx.txt", "dm_prx.txt")
-# cd("chi_wc")
-cd("1D")
-# xbin, pmf = umbrellaSampling(temp, 100, 0.08, [-3.5, 3.5], 0.2, 0.2)
 # using Calculus: second_derivative
 # using Optim, LineSearches
 # 
@@ -517,20 +592,20 @@ cd("1D")
 #  end
 
 # chi = [0.2]
-omegac = vcat([0.001, 0.005, 0.01], collect(0.04:0.04:0.2), collect(0.4:0.2:1.0), collect(1.0:1.0:4.0))
+# omegac = vcat([0.001, 0.005, 0.01], collect(0.04:0.04:0.2), collect(0.4:0.2:1.0), collect(1.0:1.0:4.0))
 # omegac = collect(1.0:3.0)
 # iter = [(i,0.1i^1.5) for i in omegac]
-iter = [(i,0.05i) for i in omegac]
+# iter = [(i,0.05i) for i in omegac]
 # iter = [(0.16,0.0064), (0.36,0.0216)]
 # iter = vec([(i,j) for i in omegac, j in chi])
-@time Threads.@threads for i in iter 
-    flnm = string("fs_", i[1], "_", i[2], ".txt")
-    # if isfile(flnm)
-    #     println(flnm, " already exists")
-    #     continue
-    # end
-    kappa(temp, 5000, i[1], i[2]) 
-end
+# @time Threads.@threads for i in iter 
+#     flnm = string("fs_", i[1], "_", i[2], ".txt")
+#     if isfile(flnm)
+#         println(flnm, " already exists")
+#         continue
+#     end
+#     kappa(temp, 5000, i[1], i[2]) 
+# end
 # pesMol, dipole = getPES()
 # chi = 0.02
 # wc = vcat([0.001, 0.005, 0.01, 0.05, 0.1], collect(0.11:0.01:0.2), collect(0.3:0.1:0.9), collect(1.0:10.0))
