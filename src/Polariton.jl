@@ -83,7 +83,6 @@ end
 end
 
 module Dynamics
-using FiniteDiff: finite_difference_gradient!, GradientCache
 using ForwardDiff: gradient!, GradientConfig
 using Random
 using StaticArrays
@@ -169,52 +168,55 @@ function velocityUpdate!(p::Particles1D, b::Bath1D)
 end
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    # f::Function, cache::GradientCache; cnstr=true)
-    f::Function, cache::GradientConfig; cnstr=true)
+    pot::Function, cache::GradientConfig; cnstr=true)
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     p.x[1] = 0.0
     @. b.x += b.v * param.Δt
-    force!(p, b, f, cache)
+    force!(p, b, pot, cache)
     velocityUpdate!(p, b)
 end
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    # f::Function, cache::GradientCache)
-    f::Function, cache::GradientConfig)
+    pot::Function, cache::GradientConfig)
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
-    force!(p, b, f, cache)
+    force!(p, b, pot, cache)
     velocityUpdate!(p, b)
 end
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    f::Function, ks::T, x0::T) where T <: AbstractFloat
+    pot::Function, ks::T, x0::T) where T <: AbstractFloat
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
-    force!(p, b, f, ks, x0)
+    force!(p, b, pot, ks, x0)
     velocityUpdate!(p, b)
 end
 
-# function force!(p::Particles1D, b::Bath1D, f::Function, cache::GradientCache)
-function force!(p::Particles1D, b::Bath1D, f::Function, cache::GradientConfig)
-    # finite_difference_gradient!(p.f, f, p.x, cache)
-    gradient!(p.f, f, p.x, cache)
-    # p.f[:] = f(p.x)
-    @simd for i in 1:b.n
-        tmp = b.c_mω2[i] * p.x[1] - b.x[i]
-        b.f[i] = b.mω2[i] * tmp
-        p.f[1] -= b.c[i] * tmp
+function force!(p::Particles1D, b::Bath1D, pot::Function, cache::GradientConfig)
+
+    gradient!(p.f, pot, p.x, cache)
+    index = 0
+    for j in 1:length(p.x)-1
+        # chunk = (j-1) * b.n
+        @simd for i in 1:b.n
+            index += 1
+            # index = chunk + i
+            tmp = b.c_mω2[i] * p.x[j] - b.x[index]
+            b.f[index] = b.mω2[i] * tmp
+            p.f[j] -= b.c[i] * tmp
+        end
     end
 end
 
 function force!(p::Particles1D, b::Bath1D, f::Function, ks::T, x0::T
     ) where T <: AbstractFloat
+
     p.f .= f(p.x)
     p.f[1] -= ks * (p.x[1]-x0)
     @simd for i in 1:b.n
@@ -287,7 +289,6 @@ using Printf
 using Random
 using WHAM
 using Statistics: mean, varm
-using FiniteDiff: GradientCache
 using ForwardDiff: GradientConfig
 using ..Dynamics
 using ..Auxiliary
@@ -296,47 +297,82 @@ using ..CorrelationFunctions
 
 const corr = CorrelationFunctions
 
+"""
+    function initialize(temp, freqCutoff, eta, ωc, chi)
+
+Initialize most of the values, parameters and structs for the dynamics.
+"""
+# TODO better and more flexible way to handle input values
 function initialize(temp, freqCutoff, eta, ωc, chi)
+    # convert values to au, so we can keep more human-friendly values outside
     ωc /= au2ev
     temp /= au2kelvin
-    param = Dynamics.Parameters(temp, 4.0, 2, 1, 15, 1, 1, 1)
-    label = repeat(["mol"], param.nMol)
-    mass = repeat([amu2au], param.nMol)
-    ω = Vector{Float64}(undef, param.nBath)
-    for i in 1:param.nBath
-        ω[i] = -freqCutoff * log((i-0.5) / param.nBath)
-    end
-    c = ω * sqrt(2eta * amu2au * freqCutoff / param.nBath / pi)
-    mω2 = ω.^2 .* amu2au
+    nPhoton = 1
+    nParticle = 20
+    nMolecule = nParticle - nPhoton
+    # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
+    nBath = 15
+    dt = 4.0
+
+    # compute coefficients for bath modes
+    nb = real(nBath)
+    # bath mode frequencies
+    ω = -freqCutoff * log.((collect(1.0:nb).-0.5) / nb)
+    # bath force constants
+    mω2 = ω.^2 * amu2au
+    # bath coupling strength
+    c = sqrt(2eta * amu2au * freqCutoff / nb / pi) * ω
+    # c/mω^2, for force evaluation
     c_mω2 = c ./ mω2
-    bath = Dynamics.ClassicalBathMode(param.nBath, amu2au, sqrt(temp/amu2au),
-        ω, c, mω2, c_mω2, similar(ω), similar(ω), param.Δt/(2*amu2au),
-        similar(ω))
-    uTotal = constructPotential(pesMol, dipole, ωc, chi)
-    if param.nParticle - param.nMol == 1 && chi != 0.0
-        push!(label, "photon")
-        push!(mass, 1.0)
-        f(x) = -uTotal(x)
-        # f = gradient(x -> -uTotal(x))
-        # tmp = Auxiliary.normalModeAnalysis(uTotal, zeros(2), omegaC)
-        # axis = tmp[2][:, 1]
-        # @. axis *= sqrt(mass)
-        # println(axis, " ", Threads.threadid())
+
+    # check the number of molecules and photons
+    if nParticle != nMolecule && chi != 0.0
+        # χ != 0 
+        if nParticle - nMolecule > 1
+            println("Multi-modes not supported currently. Reduce to single-mode.")
+            nMolecule = nParticle - 1
+        end
+        label = ["photon"]
+        mass = [1.0]
     else
-        f = gradient(x -> -pesMol(x[1]))
+        if nMolecule > 1
+            println("In no-coupling case, multi-molecule does not make sense. Reduce to single-molecule.")
+            nParticle = 1
+            nMolecule = 1
+        end
     end
+    label = vcat(repeat(["mol"], nMolecule), label)
+    mass = vcat(repeat([amu2au], nMolecule), mass)
+    if nMolecule > 1
+        nBathTotal = nMolecule * nBath
+        dummy = Vector{Float64}(undef, nBathTotal)
+    else
+        nBathTotal = nBath
+        dummy = ω
+    end
+    param = Dynamics.Parameters(temp, dt, nParticle, nMolecule, nBathTotal, 1, 1, 1)
+    bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
+        ω, c, mω2, c_mω2, similar(dummy), similar(dummy), param.Δt/(2*amu2au),
+        similar(dummy))
     mol = Dynamics.ClassicalParticle(label, mass, sqrt.(temp./mass),
         similar(mass), similar(mass), param.Δt./(2*mass), similar(mass))
-    cache = GradientConfig(f, similar(mass))
-    # cache = GradientCache(similar(mass), similar(mass))
-    return param, mol, bath, f, cache, uTotal
+    uTotal = constructPotential(pesMol, dipole, ωc, chi, nParticle, nMolecule)
+    cache = GradientConfig(uTotal, similar(mass))
+    return param, mol, bath, uTotal, cache
 end
 
+"""
+    function getPES(pes="pes.txt"::String, dm="dm.txt"::String)
+
+Read porential energy surface and dipole moment from text files and then get the
+interpolated functions. The filenames are default to "pes.txt" and "dm.txt".
+"""
 function getPES(pes="pes.txt"::String, dm="dm.txt"::String)
     potentialRaw = readdlm(pes)
     dipoleRaw = readdlm(dm)
     function interpolate(x::AbstractVector{T}, y::AbstractVector{T}
         ) where T <: AbstractFloat
+        # TODO beter way to get the range from an array assumed evenly spaced
         xrange = LinRange(x[1], x[end], length(x))
         return LinearInterpolation(xrange, y, extrapolation_bc=Line())
     end
@@ -344,16 +380,58 @@ function getPES(pes="pes.txt"::String, dm="dm.txt"::String)
         interpolate(view(dipoleRaw, :, 1), view(dipoleRaw, :, 2))
 end
 
-function constructPotential(pesMol::T, dipole::T, omegaC::AbstractFloat,
-    chi::AbstractFloat) where T <: AbstractExtrapolation
+"""
+    function constructPotential(pesMol::T1, dipole::T1, omegaC::T2, chi::T2,
+        nParticle::T2, nMolecule::T2) where {T1<:AbstractExtrapolation, T2<:Real}
+
+Function to construct the total potential of the polaritonic system for different
+number of Molecules and photons.
+
+Note that the returned potential is only for calclating force purpose, so it is
+inverted to avoid a "-" at each iteration.
+"""
+# TODO RPMD & multi-modes?
+function constructPotential(pesMol::T1, dipole::T1, omegaC::T2, chi::T2,
+    nParticle::T3, nMolecule::T3) where {T1<:AbstractExtrapolation,
+    T2, T3<:Real}
+    # compute the constants in advances. they can be expensive for many cycles
     kPho = 0.5 * omegaC^2
+    # sqrt(2 / ω_c^3) * χ
     couple = sqrt(2/omegaC^3) * chi
-    # total potential
-    @inline function uTotal(x::AbstractVector{T}) where T <: Real
-        return @inbounds @fastmath pesMol(x[1]) +
+    # construct an inverted total potential
+    # TODO use 1 float number in this case for better performance
+    @inline function uTotalOneD(x::AbstractVector{T}) where T<:Real
+        return @fastmath -pesMol(x[1])
+    end
+
+    @inline function uTotalSingleMol(x::AbstractVector{T}) where T<:Real
+        return @inbounds @fastmath -pesMol(x[1]) -
             kPho * (x[2] + couple*dipole(x[1]))^2
     end
-    return uTotal
+
+    # TODO I still it's possible to get better performance with stuff like `sum` or vector operations
+    @inline function uTotalMultiMol(x::AbstractArray{T}) where T<:Real
+        u = 0.0
+        sum_mu = 0.0
+        @inbounds @fastmath for i in 1:length(x)-1
+            sum_mu += dipole(x[i])^2
+            u -= pesMol(x[i]) 
+        end
+        return u - kPho * (x[end] + couple*sum_mu)^2
+    end
+    if nParticle == nMolecule
+        # when there is no photon, we force the system to be 1D
+        # we will still use an 1-element vector as the input
+        return uTotalOneD
+    else
+        if nMolecule == 1
+            # single-molecule and single photon
+            return uTotalSingleMol
+        else
+            # multi-molecules and single photon
+            return uTotalMultiMol
+        end
+    end
 end
 
 function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
@@ -361,14 +439,17 @@ function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
     nSteps = 3000
     rng = Random.seed!(1233+Threads.threadid())
 
-    param, mol, bath, f, cache, uTotal = initialize(
+    param, mol, bath, uTotal, cache = initialize(
         temp, freqCutoff, eta, ωc, chi)
 
     fs0 = 0.0
     fs = zeros(nSteps+1)
     q = zeros(nSteps+1)
-    x0 = zeros(length(mol.x))
-    xb0 = Random.randn(bath.n)
+    x0 = repeat([-2.0], param.nParticle)
+    x0[1] = 0.0
+    x0[end] = 0.0
+    # x0 = zeros(length(mol.x))
+    xb0 = Random.randn(param.nBath)
     for i in 1:nTraj
         # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
@@ -376,9 +457,10 @@ function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
         Dynamics.velocitySampling!(bath, rng)
         copy!(mol.x, x0)
         copy!(bath.x, xb0)
-        Dynamics.force!(mol, bath, f, cache)
+        Dynamics.force!(mol, bath, uTotal, cache)
         for j in 1:1000
-            Dynamics.velocityVelert!(mol, bath, param, f, cache, cnstr=true)
+            Dynamics.velocityVelert!(mol, bath, param, uTotal, cache,
+                cnstr=true)
             if j % 50 == 0
                 Dynamics.velocitySampling!(mol, rng)
                 Dynamics.velocitySampling!(bath, rng)
@@ -392,7 +474,7 @@ function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
         for j in 1:nSteps
-            Dynamics.velocityVelert!(mol, bath, param, f, cache)
+            Dynamics.velocityVelert!(mol, bath, param, uTotal, cache)
             q[j+1] = mol.x[1]
             # println(output, j, " ", mol.x[1], " ", mol.x[2])
             # if q[j+1] * q[j] < 0
@@ -403,18 +485,18 @@ function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
         corr.fluxSide!(fs, v0, q)
     end
 
-    return printKappa(fs, fs0, ωc, chi, temp, param.Δt)
+    return printKappa(fs, fs0, ωc, chi, temp, param)
 end
 
 function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
-    dt::T) where T <: AbstractFloat
+    param::Dynamics.Parameters) where T <: AbstractFloat
     fs /= fs0
-    flnm = string("fs_", ωc, "_", chi, "_", temp, "_newvs.txt")
+    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, ".txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
     @printf(fsOut, "# ω_c=%7.3e,χ=%6.4g \n", ωc, chi)
     for i in 1:length(fs)
-        @printf(fsOut, "%5.2f %11.8g\n", (i-1)*dt*2.4189e-2, fs[i])
+        @printf(fsOut, "%5.2f %11.8g\n", (i-1)*param.Δt*2.4189e-2, fs[i])
     end
     close(fsOut)
     println("Results written to file: $flnm")
@@ -570,9 +652,9 @@ end
 cd("test")
 using Profile
 function test()
-    computeKappa(300.0, 1, 0.05, 0.01)
-    # Profile.clear_malloc_data()
-    # @time computeKappa(300.0, 5000, 0.05, 0.01)
+    computeKappa(300.0, 1, 0.16, 0.016)
+    Profile.clear_malloc_data()
+    @time computeKappa(300.0, 5000, 0.16, 0.016)
 end
 test()
 # xbin, pmf = umbrellaSampling(350.0, 100, 0.15, [-3.5, 3.5], 0.16, 0.008)
