@@ -189,12 +189,12 @@ function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
 end
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    pot::Function, ks::T, x0::T) where T <: AbstractFloat
+    pot::Function, cache::GradientConfig, ks::T, x0::T) where T <: AbstractFloat
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
-    force!(p, b, pot, ks, x0)
+    force!(p, b, pot, cache, ks, x0)
     velocityUpdate!(p, b)
 end
 
@@ -203,10 +203,8 @@ function force!(p::Particles1D, b::Bath1D, pot::Function, cache::GradientConfig)
     gradient!(p.f, pot, p.x, cache)
     index = 0
     for j in 1:length(p.x)-1
-        # chunk = (j-1) * b.n
         @simd for i in 1:b.n
             index += 1
-            # index = chunk + i
             tmp = b.c_mω2[i] * p.x[j] - b.x[index]
             b.f[index] = b.mω2[i] * tmp
             p.f[j] -= b.c[i] * tmp
@@ -214,15 +212,19 @@ function force!(p::Particles1D, b::Bath1D, pot::Function, cache::GradientConfig)
     end
 end
 
-function force!(p::Particles1D, b::Bath1D, f::Function, ks::T, x0::T
-    ) where T <: AbstractFloat
+function force!(p::Particles1D, b::Bath1D, pot::Function, cache::GradientConfig,
+    ks::T, x0::T) where T <: AbstractFloat
 
-    p.f .= f(p.x)
+    gradient!(p.f, pot, p.x, cache)
     p.f[1] -= ks * (p.x[1]-x0)
-    @simd for i in 1:b.n
-        tmp = b.c_mω2[i] * p.x[1] - b.x[i]
-        b.f[i] = b.mω2[i] * tmp
-        p.f[1] -= b.c[i] * tmp
+    index = 0
+    for j in 1:length(p.x)-1
+        @simd for i in 1:b.n
+            index += 1
+            tmp = b.c_mω2[i] * p.x[j] - b.x[index]
+            b.f[index] = b.mω2[i] * tmp
+            p.f[j] -= b.c[i] * tmp
+        end
     end
 end
 
@@ -303,12 +305,12 @@ const corr = CorrelationFunctions
 Initialize most of the values, parameters and structs for the dynamics.
 """
 # TODO better and more flexible way to handle input values
-function initialize(temp, freqCutoff, eta, ωc, chi)
+function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Real
     # convert values to au, so we can keep more human-friendly values outside
     ωc /= au2ev
     temp /= au2kelvin
     nPhoton = 1
-    nParticle = 20
+    nParticle = 2
     nMolecule = nParticle - nPhoton
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
     nBath = 15
@@ -340,6 +342,8 @@ function initialize(temp, freqCutoff, eta, ωc, chi)
             nParticle = 1
             nMolecule = 1
         end
+        label = Vector{String}(undef, 0)
+        mass = Vector{Float64}(undef, 0)
     end
     label = vcat(repeat(["mol"], nMolecule), label)
     mass = vcat(repeat([amu2au], nMolecule), mass)
@@ -409,15 +413,15 @@ function constructPotential(pesMol::T1, dipole::T1, omegaC::T2, chi::T2,
             kPho * (x[2] + couple*dipole(x[1]))^2
     end
 
-    # TODO I still it's possible to get better performance with stuff like `sum` or vector operations
+    # TODO I still think it's possible to get better performance with stuff like `sum` or vector operations
     @inline function uTotalMultiMol(x::AbstractArray{T}) where T<:Real
         u = 0.0
-        sum_mu = 0.0
+        ∑μ = 0.0
         @inbounds @fastmath for i in 1:length(x)-1
-            sum_mu += dipole(x[i])^2
+            ∑μ += dipole(x[i])^2
             u -= pesMol(x[i]) 
         end
-        return u - kPho * (x[end] + couple*sum_mu)^2
+        return @fastmath u - kPho * (x[end] + couple*∑μ)^2
     end
     if nParticle == nMolecule
         # when there is no photon, we force the system to be 1D
@@ -434,17 +438,15 @@ function constructPotential(pesMol::T1, dipole::T1, omegaC::T2, chi::T2,
     end
 end
 
-function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
-    ) where T <: AbstractFloat
-    nSteps = 3000
+function computeKappa(temp::T1, nTraj::T2, nStep::T2, ωc::T1, chi::T1
+    ) where {T1<:Real, T2<:Integer}
     rng = Random.seed!(1233+Threads.threadid())
 
-    param, mol, bath, uTotal, cache = initialize(
-        temp, freqCutoff, eta, ωc, chi)
+    param, mol, bath, uTotal, cache = initialize(temp, freqCutoff, eta, ωc, chi)
 
     fs0 = 0.0
-    fs = zeros(nSteps+1)
-    q = zeros(nSteps+1)
+    fs = zeros(nStep+1)
+    q = zeros(nStep+1)
     x0 = repeat([-2.0], param.nParticle)
     x0[1] = 0.0
     x0[end] = 0.0
@@ -473,7 +475,7 @@ function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
         q[1] = v0
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
-        for j in 1:nSteps
+        for j in 1:nStep
             Dynamics.velocityVelert!(mol, bath, param, uTotal, cache)
             q[j+1] = mol.x[1]
             # println(output, j, " ", mol.x[1], " ", mol.x[2])
@@ -520,29 +522,31 @@ function umbrellaSetup(temp::T, nw::Integer, ks::T, bound::Vector{T}) where T <:
     return xi
 end
 
-function umbrellaSampling(temp::T, nw::Integer, ks::T, bound::Vector{T}, ωc::T, chi::T
-    ) where T <: AbstractFloat
-    nSteps = 10000000
+function umbrellaSampling(temp::T1, nw::T2, nStep::T2, ks::T1, bound::Vector{T1},
+    ωc::T1, chi::T1) where {T1<:Real, T2<:Integer}
     nSkip = 10
     t = temp / au2kelvin
-    nCollected = floor(Int64, nSteps/nSkip)
+    nCollected = floor(Int64, nStep/nSkip)
     xi = umbrellaSetup(t, nw, ks, bound)
-    param, mol, bath, f, uTotal = initialize(temp, freqCutoff, eta, ωc, chi)
+    param, mol, bath, uTotal, cache = initialize(temp, freqCutoff, eta, ωc, chi)
     wham_prarm, wham_array, ui_array =  WHAM.setup(t, nw, bound, xi, ks/2.0, nBin=10*nw+1)
 
-    rng = Random.seed!(114514+Threads.threadid())
+    # rng = Random.seed!(114514+Threads.threadid())
+    rng = Random.seed!()
     cv = Vector{Float64}(undef, nCollected)
     for i in 1:nw
         # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
         x0 = xi[i]
-        mol.x .= 0.0 
+        mol.x .= -2.0
+        mol.x[1] = x0
+        mol.x[end] = 0.0
         Dynamics.velocitySampling!(mol, rng)
         Dynamics.velocitySampling!(bath, rng)
-        bath.x = Random.randn(bath.n)
-        Dynamics.force!(mol, bath, f)
-        for j in 1:1000
-            Dynamics.velocityVelert!(param, mol, bath, f, ks, x0)
+        bath.x = Random.randn(param.nBath)
+        Dynamics.force!(mol, bath, uTotal, cache)
+        for j in 1:5000
+            Dynamics.velocityVelert!(mol, bath, param, uTotal, cache, ks, x0)
             if j % 25 == 0
                 Dynamics.velocitySampling!(mol, rng)
                 Dynamics.velocitySampling!(bath, rng)
@@ -551,7 +555,7 @@ function umbrellaSampling(temp::T, nw::Integer, ks::T, bound::Vector{T}, ωc::T,
         # println(output, "# ", v0)
         for j in 1:nCollected
             for k in 1:nSkip
-                Dynamics.velocityVelert!(param, mol, bath, f, ks, x0)
+                Dynamics.velocityVelert!(mol, bath, param, uTotal, cache, ks, x0)
             end
             cv[j] = mol.x[1]
             # if j % 25 == 0
@@ -570,14 +574,14 @@ function umbrellaSampling(temp::T, nw::Integer, ks::T, bound::Vector{T}, ωc::T,
 
     # xbin, pmf = @time WHAM.unbias(wham_prarm, wham_array)
     xbin, pmf = @time WHAM.integration(wham_prarm, ui_array)
-    flnm = string("pmf_", ωc, "_", chi, "_", temp, ".txt")
+    flnm = string("pmf_", ωc, "_", chi, "_", temp, "_", param.nMol, ".txt")
     open(flnm, "w") do io
         @printf(io, "# ω_c=%5.3f,χ=%6.4f \n", ωc, chi)
         @printf(io, "# Thread ID: %3d\n", Threads.threadid())
         @printf(io, "# Physical temperature: %6.1f\n", temp)
         @printf(io, "# Number of windows: %5d\n", nw)
         @printf(io, "# Number of bins: %5d\n", wham_prarm.nBin)
-        @printf(io, "# Number of points per window: %11d\n", nSteps)
+        @printf(io, "# Number of points per window: %11d\n", nStep)
         @printf(io, "# Convergence criteria: %7.2g\n", 1e-12)
         writedlm(io, [xbin pmf])
     end
@@ -613,6 +617,7 @@ const pesMol, dipole = getPES()
 function temperatureDependency()
     cd("tempDep")
     nTraj = 10000
+    nStep = 3000
     temp = collect(233.0:15.0:413.0)
     # temp = [233.0]
     # omegac = vcat(collect(0.01:0.01:0.03), collect(0.1:0.1:0.3))
@@ -622,7 +627,7 @@ function temperatureDependency()
     # iter = reduce(vcat, [[(i,0.1i), (i,0.3i)] for i in omegac])
     iter = [(0.16, 0.0)]
     cd("tmp")
-    computeKappa(300.0, 1, omegac[1], omegac[1])
+    computeKappa(300.0, 1, 1, omegac[1], omegac[1])
     cd("..")
 
     pmf = readdlm("pmf_0.2_0.0_300.0.txt", comments=true)
@@ -641,7 +646,7 @@ function temperatureDependency()
         @printf(output, "# 1/T    log k/au    log k/T     T      log k/s     k(au)       k(s^-1)      κ        TST(au)     Flag\n")
         @time for j in temp
             println("Currently running ωc = $ωc, χ = $χ, T = $j")
-            fs = computeKappa(j, nTraj, ωc, χ)
+            fs = computeKappa(j, nTraj, nStep, ωc, χ)
             tst = WHAM.TSTRate(pmf[:, 1], pmf[:, 2], au2kelvin/j, amu2au)
             k = rate(output, fs, tst, au2kelvin/j)
         end
@@ -651,13 +656,17 @@ end
 # temperatureDependency()
 cd("test")
 using Profile
-function test()
-    computeKappa(300.0, 1, 0.16, 0.016)
+function testKappa()
+    @time computeKappa(300.0, 1, 1, 0.16, 0.016)
     Profile.clear_malloc_data()
-    @time computeKappa(300.0, 5000, 0.16, 0.016)
+    @time computeKappa(300.0, 5000, 3000, 0.16, 0.016)
 end
-test()
-# xbin, pmf = umbrellaSampling(350.0, 100, 0.15, [-3.5, 3.5], 0.16, 0.008)
+function testPMF()
+    @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)
+    Profile.clear_malloc_data()
+    @time umbrellaSampling(300.0, 100, 10000000, 0.15, [-3.5, 3.5], 0.16, 0.0)
+end
+testPMF()
 # param, label, mass, bath = initialize(temp, freqCutoff, eta)
 # const pesMol, dipole = getPES("pes_low.txt", "dm_low.txt")
 # pesMol, dipole = getPES("pes_prx.txt", "dm_prx.txt")
