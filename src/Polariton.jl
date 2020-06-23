@@ -84,6 +84,7 @@ end
 
 module Dynamics
 using FiniteDiff: finite_difference_gradient!, GradientCache
+using ForwardDiff: gradient!, GradientConfig
 using Random
 using StaticArrays
 
@@ -111,6 +112,7 @@ mutable struct ClassicalParticle <: Particles1D
     σ::Vector{Float64}
     x::Vector{Float64}
     f::Vector{Float64}
+    dtby2m::Vector{Float64}
     v::Vector{Float64}
 end
 
@@ -124,6 +126,7 @@ mutable struct ClassicalBathMode <: Bath1D
     c_mω2::Vector{Float64}
     x::Vector{Float64}
     f::Vector{Float64}
+    dtby2m::Float64
     v::Vector{Float64}
 end
 
@@ -160,45 +163,48 @@ function velocitySampling(rng::AbstractRNG, param::Parameters, p::ParticlesND)
     return v
 end
 
-function velocityUpdate!(p::Particles1D, b::Bath1D, param::Parameters)
-    @. p.v += 0.5 * param.Δt * p.f / p.m 
-    @. b.v += 0.5 * b.f / b.m * param.Δt 
+function velocityUpdate!(p::Particles1D, b::Bath1D)
+    @. p.v += p.f * p.dtby2m
+    @. b.v += b.f * b.dtby2m
 end
 
-
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    f::Function, cache::GradientCache; cnstr=true)
+    # f::Function, cache::GradientCache; cnstr=true)
+    f::Function, cache::GradientConfig; cnstr=true)
 
-    velocityUpdate!(p, b, param)
+    velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     p.x[1] = 0.0
     @. b.x += b.v * param.Δt
     force!(p, b, f, cache)
-    velocityUpdate!(p, b, param)
+    velocityUpdate!(p, b)
 end
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    f::Function, cache::GradientCache)
+    # f::Function, cache::GradientCache)
+    f::Function, cache::GradientConfig)
 
-    velocityUpdate!(p, b, param)
+    velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
     force!(p, b, f, cache)
-    velocityUpdate!(p, b, param)
+    velocityUpdate!(p, b)
 end
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
     f::Function, ks::T, x0::T) where T <: AbstractFloat
 
-    velocityUpdate!(p, b, param)
+    velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
     force!(p, b, f, ks, x0)
-    velocityUpdate!(p, b, param)
+    velocityUpdate!(p, b)
 end
 
-function force!(p::Particles1D, b::Bath1D, f::Function, cache::GradientCache)
-    finite_difference_gradient!(p.f, f, p.x, cache)
+# function force!(p::Particles1D, b::Bath1D, f::Function, cache::GradientCache)
+function force!(p::Particles1D, b::Bath1D, f::Function, cache::GradientConfig)
+    # finite_difference_gradient!(p.f, f, p.x, cache)
+    gradient!(p.f, f, p.x, cache)
     # p.f[:] = f(p.x)
     @simd for i in 1:b.n
         tmp = b.c_mω2[i] * p.x[1] - b.x[i]
@@ -276,12 +282,13 @@ end
 
 using Calculus: gradient
 using DelimitedFiles
-using Interpolations
+using Interpolations: LinearInterpolation, Line, AbstractExtrapolation
 using Printf
 using Random
 using WHAM
 using Statistics: mean, varm
 using FiniteDiff: GradientCache
+using ForwardDiff: GradientConfig
 using ..Dynamics
 using ..Auxiliary
 using .Auxiliary.Constants: au2wn, au2ev, au2kelvin, au2kcal, amu2au, au2fs
@@ -303,7 +310,8 @@ function initialize(temp, freqCutoff, eta, ωc, chi)
     mω2 = ω.^2 .* amu2au
     c_mω2 = c ./ mω2
     bath = Dynamics.ClassicalBathMode(param.nBath, amu2au, sqrt(temp/amu2au),
-        ω, c, mω2, c_mω2, similar(ω), similar(ω), similar(ω))
+        ω, c, mω2, c_mω2, similar(ω), similar(ω), param.Δt/(2*amu2au),
+        similar(ω))
     uTotal = constructPotential(pesMol, dipole, ωc, chi)
     if param.nParticle - param.nMol == 1 && chi != 0.0
         push!(label, "photon")
@@ -318,23 +326,22 @@ function initialize(temp, freqCutoff, eta, ωc, chi)
         f = gradient(x -> -pesMol(x[1]))
     end
     mol = Dynamics.ClassicalParticle(label, mass, sqrt.(temp./mass),
-        similar(mass), similar(mass), similar(mass))
-    cache = GradientCache(similar(mass), similar(mass))
+        similar(mass), similar(mass), param.Δt./(2*mass), similar(mass))
+    cache = GradientConfig(f, similar(mass))
+    # cache = GradientCache(similar(mass), similar(mass))
     return param, mol, bath, f, cache, uTotal
 end
 
 function getPES(pes="pes.txt"::String, dm="dm.txt"::String)
     potentialRaw = readdlm(pes)
     dipoleRaw = readdlm(dm)
-    xrange = LinRange(potentialRaw[1, 1], potentialRaw[end, 1],
-        length(potentialRaw[:, 1]))
-    pesMol = LinearInterpolation(xrange, potentialRaw[:, 2],
-        extrapolation_bc=Line())
-    xrange = LinRange(dipoleRaw[1, 1], dipoleRaw[end, 1],
-        length(dipoleRaw[:, 1]))
-    dipole = LinearInterpolation(xrange, dipoleRaw[:, 2],
-        extrapolation_bc=Line())
-    return pesMol, dipole
+    function interpolate(x::AbstractVector{T}, y::AbstractVector{T}
+        ) where T <: AbstractFloat
+        xrange = LinRange(x[1], x[end], length(x))
+        return LinearInterpolation(xrange, y, extrapolation_bc=Line())
+    end
+    return interpolate(view(potentialRaw, :, 1), view(potentialRaw, :, 2)),
+        interpolate(view(dipoleRaw, :, 1), view(dipoleRaw, :, 2))
 end
 
 function constructPotential(pesMol::T, dipole::T, omegaC::AbstractFloat,
@@ -342,7 +349,7 @@ function constructPotential(pesMol::T, dipole::T, omegaC::AbstractFloat,
     kPho = 0.5 * omegaC^2
     couple = sqrt(2/omegaC^3) * chi
     # total potential
-    @inline function uTotal(x::AbstractVector{T}) where T <: AbstractFloat
+    @inline function uTotal(x::AbstractVector{T}) where T <: Real
         return @inbounds @fastmath pesMol(x[1]) +
             kPho * (x[2] + couple*dipole(x[1]))^2
     end
@@ -351,10 +358,11 @@ end
 
 function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
     ) where T <: AbstractFloat
-    nSteps = 1500
+    nSteps = 3000
     rng = Random.seed!(1233+Threads.threadid())
 
-    param, mol, bath, f, cache, uTotal = initialize(temp, freqCutoff, eta, ωc, chi)
+    param, mol, bath, f, cache, uTotal = initialize(
+        temp, freqCutoff, eta, ωc, chi)
 
     fs0 = 0.0
     fs = zeros(nSteps+1)
@@ -386,9 +394,7 @@ function computeKappa(temp::T, nTraj::Integer, ωc::T, chi::T
         for j in 1:nSteps
             Dynamics.velocityVelert!(mol, bath, param, f, cache)
             q[j+1] = mol.x[1]
-            # println(j, " ", mol.v[1], " ", q[j+1], " ", 0.5*amu2au*mol.v[1]^2+pesMol(mol.x[1]))
-            # println(j, " ", mol.x[1], " ", q[j+1])
-            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", uTotal(mol.x[1], mol.x[2]), " ", q[j+1])
+            # println(output, j, " ", mol.x[1], " ", mol.x[2])
             # if q[j+1] * q[j] < 0
             #     println(output, "# here")
             # end
@@ -562,8 +568,13 @@ end
 
 # temperatureDependency()
 cd("test")
-computeKappa(300.0, 1, 0.05, 0.01)
-@time computeKappa(300.0, 5000, 0.05, 0.01)
+using Profile
+function test()
+    computeKappa(300.0, 1, 0.05, 0.01)
+    # Profile.clear_malloc_data()
+    # @time computeKappa(300.0, 5000, 0.05, 0.01)
+end
+test()
 # xbin, pmf = umbrellaSampling(350.0, 100, 0.15, [-3.5, 3.5], 0.16, 0.008)
 # param, label, mass, bath = initialize(temp, freqCutoff, eta)
 # const pesMol, dipole = getPES("pes_low.txt", "dm_low.txt")
