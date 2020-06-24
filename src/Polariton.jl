@@ -284,7 +284,6 @@ end
 
 end
 
-using Calculus: gradient
 using DelimitedFiles
 using Interpolations: LinearInterpolation, Line, AbstractExtrapolation
 using Printf
@@ -309,8 +308,8 @@ function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Rea
     # convert values to au, so we can keep more human-friendly values outside
     ωc /= au2ev
     temp /= au2kelvin
-    nPhoton = 1
-    nParticle = 11
+    nPhoton = 0
+    nParticle = 1
     nMolecule = nParticle - nPhoton
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
     nBath = 15
@@ -337,11 +336,11 @@ function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Rea
         label = ["photon"]
         mass = [1.0]
     else
-        if nMolecule > 1
-            println("In no-coupling case, multi-molecule does not make sense. Reduce to single-molecule.")
-            nParticle = 1
-            nMolecule = 1
-        end
+        # if nMolecule > 1
+        #     println("In no-coupling case, multi-molecule does not make sense. Reduce to single-molecule.")
+        #     nParticle = 1
+        #     nMolecule = 1
+        # end
         label = Vector{String}(undef, 0)
         mass = Vector{Float64}(undef, 0)
     end
@@ -412,7 +411,13 @@ function constructPotential(pesMol::T1, dipole::T1, omegaC::T2, chi::T2,
         return @inbounds @fastmath -pesMol(x[1]) -
             kPho * (x[2] + couple*dipole(x[1]))^2
     end
-
+    @inline function uTotalMultiMoltest(x::AbstractArray{T}) where T<:Real
+        u = 0.0
+        @inbounds @fastmath for i in 1:length(x)
+            u -= pesMol(x[i]) 
+        end
+        return u 
+    end
     # TODO I still think it's possible to get better performance with stuff like `sum` or vector operations
     @inline function uTotalMultiMol(x::AbstractArray{T}) where T<:Real
         # ∑μ = sum(dipole.(view(x, 1:20)))
@@ -428,7 +433,8 @@ function constructPotential(pesMol::T1, dipole::T1, omegaC::T2, chi::T2,
     if nParticle == nMolecule
         # when there is no photon, we force the system to be 1D
         # we will still use an 1-element vector as the input
-        return uTotalOneD
+        return uTotalMultiMoltest
+        # return uTotalOneD
     else
         if nMolecule == 1
             # single-molecule and single photon
@@ -659,9 +665,9 @@ end
 cd("test")
 using Profile
 function testKappa()
-    @time computeKappa(300.0, 2, 3000, 0.16, 0.0016)
+    @time computeKappa(308.0, 1, 1, 0.16, 0.0)
     Profile.clear_malloc_data()
-    @time computeKappa(300.0, 5000, 3000, 0.16, 0.0016)
+    @time computeKappa(308.0, 5000, 3000, 0.16, 0.0)
 end
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)
