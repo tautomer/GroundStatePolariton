@@ -106,6 +106,7 @@ struct Parameters
 end
 
 mutable struct ClassicalParticle <: Particles1D
+    n::Int64
     label::Vector{String}
     m::Vector{Float64}
     σ::Vector{Float64}
@@ -202,7 +203,7 @@ function force!(p::Particles1D, b::Bath1D, pot::Function, cache::GradientConfig)
 
     gradient!(p.f, pot, p.x, cache)
     index = 0
-    for j in 1:length(p.x)-1
+    for j in 1:p.n
         @simd for i in 1:b.n
             index += 1
             tmp = b.c_mω2[i] * p.x[j] - b.x[index]
@@ -218,7 +219,7 @@ function force!(p::Particles1D, b::Bath1D, pot::Function, cache::GradientConfig,
     gradient!(p.f, pot, p.x, cache)
     p.f[1] -= ks * (p.x[1]-x0)
     index = 0
-    for j in 1:length(p.x)-1
+    for j in 1:p.n
         @simd for i in 1:b.n
             index += 1
             tmp = b.c_mω2[i] * p.x[j] - b.x[index]
@@ -228,17 +229,6 @@ function force!(p::Particles1D, b::Bath1D, pot::Function, cache::GradientConfig,
     end
 end
 
-function force(f::Function, q::Vector{T}, b::Bath1D, ks::T, x0::T) where T <: AbstractFloat
-    fp = f(q)
-    fp[1] -= ks * (q[1]-x0)
-    fb = Vector{Float64}(undef, b.n)
-    for i in 1:b.n
-        tmp = b.c_mω2[i] * q[1] - b.x[i]
-        fb[i] = b.mω2[i] * tmp
-        fp[1] -= b.c[i] * tmp
-    end
-    return fp, fb
-end
 end
 
 module CorrelationFunctions
@@ -308,8 +298,8 @@ function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Rea
     # convert values to au, so we can keep more human-friendly values outside
     ωc /= au2ev
     temp /= au2kelvin
-    nPhoton = 0
-    nParticle = 1
+    nPhoton = 1
+    nParticle = 21
     nMolecule = nParticle - nPhoton
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
     nBath = 15
@@ -327,7 +317,7 @@ function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Rea
     c_mω2 = c ./ mω2
 
     # check the number of molecules and photons
-    if nParticle != nMolecule && chi != 0.0
+    if nParticle != nMolecule # && chi != 0.0
         # χ != 0 
         if nParticle - nMolecule > 1
             println("Multi-modes not supported currently. Reduce to single-mode.")
@@ -336,11 +326,11 @@ function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Rea
         label = ["photon"]
         mass = [1.0]
     else
-        # if nMolecule > 1
-        #     println("In no-coupling case, multi-molecule does not make sense. Reduce to single-molecule.")
-        #     nParticle = 1
-        #     nMolecule = 1
-        # end
+        if nMolecule > 1
+            println("In no-coupling case, multi-molecule does not make sense. Reduce to single-molecule.")
+            nParticle = 1
+            nMolecule = 1
+        end
         label = Vector{String}(undef, 0)
         mass = Vector{Float64}(undef, 0)
     end
@@ -357,7 +347,7 @@ function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Rea
     bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
         ω, c, mω2, c_mω2, similar(dummy), similar(dummy), param.Δt/(2*amu2au),
         similar(dummy))
-    mol = Dynamics.ClassicalParticle(label, mass, sqrt.(temp./mass),
+    mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
         similar(mass), similar(mass), param.Δt./(2*mass), similar(mass))
     uTotal = constructPotential(pesMol, dipole, ωc, chi, nParticle, nMolecule)
     cache = GradientConfig(uTotal, similar(mass))
@@ -433,8 +423,8 @@ function constructPotential(pesMol::T1, dipole::T1, omegaC::T2, chi::T2,
     if nParticle == nMolecule
         # when there is no photon, we force the system to be 1D
         # we will still use an 1-element vector as the input
-        return uTotalMultiMoltest
-        # return uTotalOneD
+        # return uTotalMultiMoltest
+        return uTotalOneD
     else
         if nMolecule == 1
             # single-molecule and single photon
@@ -665,9 +655,9 @@ end
 cd("test")
 using Profile
 function testKappa()
-    @time computeKappa(308.0, 1, 1, 0.16, 0.0)
+    @time computeKappa(300.0, 1, 1, 0.16, 0.0)
     Profile.clear_malloc_data()
-    @time computeKappa(308.0, 5000, 3000, 0.16, 0.0)
+    @time computeKappa(300.0, 5000, 3000, 0.16, 0.0)
 end
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)
