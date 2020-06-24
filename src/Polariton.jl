@@ -310,7 +310,7 @@ function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Rea
     ωc /= au2ev
     temp /= au2kelvin
     nPhoton = 1
-    nParticle = 2
+    nParticle = 11
     nMolecule = nParticle - nPhoton
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
     nBath = 15
@@ -415,10 +415,12 @@ function constructPotential(pesMol::T1, dipole::T1, omegaC::T2, chi::T2,
 
     # TODO I still think it's possible to get better performance with stuff like `sum` or vector operations
     @inline function uTotalMultiMol(x::AbstractArray{T}) where T<:Real
+        # ∑μ = sum(dipole.(view(x, 1:20)))
+        # u = sum(pesMol.(view(x, 1:20)))
         u = 0.0
         ∑μ = 0.0
         @inbounds @fastmath for i in 1:length(x)-1
-            ∑μ += dipole(x[i])^2
+            ∑μ += dipole(x[i])
             u -= pesMol(x[i]) 
         end
         return @fastmath u - kPho * (x[end] + couple*∑μ)^2
@@ -478,7 +480,7 @@ function computeKappa(temp::T1, nTraj::T2, nStep::T2, ωc::T1, chi::T1
         for j in 1:nStep
             Dynamics.velocityVelert!(mol, bath, param, uTotal, cache)
             q[j+1] = mol.x[1]
-            # println(output, j, " ", mol.x[1], " ", mol.x[2])
+            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3], " ", mol.x[4])
             # if q[j+1] * q[j] < 0
             #     println(output, "# here")
             # end
@@ -531,8 +533,8 @@ function umbrellaSampling(temp::T1, nw::T2, nStep::T2, ks::T1, bound::Vector{T1}
     param, mol, bath, uTotal, cache = initialize(temp, freqCutoff, eta, ωc, chi)
     wham_prarm, wham_array, ui_array =  WHAM.setup(t, nw, bound, xi, ks/2.0, nBin=10*nw+1)
 
-    # rng = Random.seed!(114514+Threads.threadid())
-    rng = Random.seed!()
+    rng = Random.seed!(114514+Threads.threadid())
+    # rng = Random.seed!()
     cv = Vector{Float64}(undef, nCollected)
     for i in 1:nw
         # traj = string("traj_", i, ".txt")
@@ -657,16 +659,16 @@ end
 cd("test")
 using Profile
 function testKappa()
-    @time computeKappa(300.0, 1, 1, 0.16, 0.016)
+    @time computeKappa(300.0, 2, 3000, 0.16, 0.0016)
     Profile.clear_malloc_data()
-    @time computeKappa(300.0, 5000, 3000, 0.16, 0.016)
+    @time computeKappa(300.0, 5000, 3000, 0.16, 0.0016)
 end
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)
     Profile.clear_malloc_data()
     @time umbrellaSampling(300.0, 100, 10000000, 0.15, [-3.5, 3.5], 0.16, 0.0)
 end
-testPMF()
+testKappa()
 # param, label, mass, bath = initialize(temp, freqCutoff, eta)
 # const pesMol, dipole = getPES("pes_low.txt", "dm_low.txt")
 # pesMol, dipole = getPES("pes_prx.txt", "dm_prx.txt")
