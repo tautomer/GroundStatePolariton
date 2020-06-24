@@ -299,7 +299,7 @@ function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Rea
     ωc /= au2ev
     temp /= au2kelvin
     nPhoton = 1
-    nParticle = 21
+    nParticle = 101
     nMolecule = nParticle - nPhoton
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
     nBath = 15
@@ -447,7 +447,7 @@ function computeKappa(temp::T1, nTraj::T2, nStep::T2, ωc::T1, chi::T1
     q = zeros(nStep+1)
     x0 = repeat([-2.0], param.nParticle)
     x0[1] = 0.0
-    x0[end] = 0.0
+    x0[end] = -61.18780197054656 * param.nMol
     # x0 = zeros(length(mol.x))
     xb0 = Random.randn(param.nBath)
     for i in 1:nTraj
@@ -470,22 +470,26 @@ function computeKappa(temp::T1, nTraj::T2, nStep::T2, ωc::T1, chi::T1
         copy!(xb0, bath.x)
         v0 = mol.v[1] 
         q .= 0.0
-        q[1] = v0
+        # q[1] = v0
+        q[1] = pesMol(mol.x[1]) + 0.5 * amu2au * mol.v[1]^2
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
         for j in 1:nStep
             Dynamics.velocityVelert!(mol, bath, param, uTotal, cache)
-            q[j+1] = mol.x[1]
+            # q[j+1] = mol.x[1]
+            q[j+1] = pesMol(mol.x[1]) + 0.5 * amu2au * mol.v[1]^2
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3], " ", mol.x[4])
+            # println(output, j, " ", mol.x[1], " ", pesMol(mol.x[1]) + 0.5 * amu2au * mol.v[1]^2)
             # if q[j+1] * q[j] < 0
             #     println(output, "# here")
             # end
         end
+        fs .+= q
         # close(output)
-        corr.fluxSide!(fs, v0, q)
+        # corr.fluxSide!(fs, v0, q)
     end
 
-    return printKappa(fs, fs0, ωc, chi, temp, param)
+    return printKappa(fs, nTraj+0.0, ωc, chi, temp, param)
 end
 
 function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
@@ -652,12 +656,12 @@ function temperatureDependency()
 end
 
 # temperatureDependency()
-cd("test")
+cd("energy")
 using Profile
 function testKappa()
-    @time computeKappa(300.0, 1, 1, 0.16, 0.0)
+    @time computeKappa(30.0, 100, 3000, 0.16, 0.016)
     Profile.clear_malloc_data()
-    @time computeKappa(300.0, 5000, 3000, 0.16, 0.0)
+    # @time computeKappa(300.0, 5000, 3000, 0.16, 0.0)
 end
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)
