@@ -83,7 +83,6 @@ end
 end
 
 module Dynamics
-using ForwardDiff: gradient!, GradientConfig
 using Random
 using StaticArrays
 
@@ -169,39 +168,39 @@ function velocityUpdate!(p::Particles1D, b::Bath1D)
 end
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    pot::Function, cache::GradientConfig; cnstr=true)
+    ∇u!::Function, cache::AbstractMatrix{T}; cnstr=true) where T <: AbstractFloat
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     p.x[1] = 0.0
     @. b.x += b.v * param.Δt
-    force!(p, b, pot, cache)
+    force!(p, b, ∇u!, cache)
     velocityUpdate!(p, b)
 end
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    pot::Function, cache::GradientConfig)
+    ∇u!::Function, cache::AbstractMatrix{T}) where T <: AbstractFloat
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
-    force!(p, b, pot, cache)
+    force!(p, b, ∇u!, cache)
     velocityUpdate!(p, b)
 end
 
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
-    pot::Function, cache::GradientConfig, ks::T, x0::T) where T <: AbstractFloat
+    ∇u!::Function, cache::AbstractMatrix{T}, ks::T, x0::T) where T <: AbstractFloat
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
-    force!(p, b, pot, cache, ks, x0)
+    force!(p, b, ∇u!, cache, ks, x0)
     velocityUpdate!(p, b)
 end
 
-function force!(p::Particles1D, b::Bath1D, pot::Function, cache::GradientConfig)
+function force!(p::Particles1D, b::Bath1D, ∇u!::Function, cache::AbstractMatrix{T}) where T<:AbstractFloat
 
-    gradient!(p.f, pot, p.x, cache)
+    ∇u!(p.f, p.x, cache)
     index = 0
     for j in 1:p.n
         @simd for i in 1:b.n
@@ -213,10 +212,10 @@ function force!(p::Particles1D, b::Bath1D, pot::Function, cache::GradientConfig)
     end
 end
 
-function force!(p::Particles1D, b::Bath1D, pot::Function, cache::GradientConfig,
+function force!(p::Particles1D, b::Bath1D, ∇u!::Function, cache::AbstractMatrix{T},
     ks::T, x0::T) where T <: AbstractFloat
 
-    gradient!(p.f, pot, p.x, cache)
+    ∇u!(p.f, p.x, cache)
     p.f[1] -= ks * (p.x[1]-x0)
     index = 0
     for j in 1:p.n
@@ -235,25 +234,7 @@ module CorrelationFunctions
 using LinearAlgebra: dot
 using Statistics: mean
 
-"""
-    projection(x1::Float64, x2::Float64, axis::Vector{Float64}})
-
-Project primitive (R,q) or (v_R,v_q) onto the first normal mode
-"""
-function projection(x::Array, axis::Vector{Float64})
-    if isa(x[1], Array)
-        tmp = [mean(i) for i in x]
-    else
-        tmp = x
-    end
-    if length(tmp) == 1
-        return tmp[1]
-    else
-        return dot(tmp, axis)
-    end
-end
-
-function heaviSide(x::AbstractFloat)
+function heaviSide(x::Real)
     if x >= 0.0
         h = 1.0
     else
@@ -280,7 +261,6 @@ using Printf
 using Random
 using WHAM
 using Statistics: mean, varm
-using ForwardDiff: GradientConfig
 using ..Dynamics
 using ..Auxiliary
 using .Auxiliary.Constants: au2wn, au2ev, au2kelvin, au2kcal, amu2au, au2fs
@@ -288,18 +268,83 @@ using ..CorrelationFunctions
 
 const corr = CorrelationFunctions
 
+# Fourier series fitted parameters
+const dipoleCoeff = [0.8076027811523625 3.3398810618390105 1.9817646321501963 4.792576448227526 6.290743873263665;
+    3.141592653589415 3.141592653594254 -3.1415926535898864 3.1415926535970247 3.1415926535721725;
+    1.3540650298409318 0.07590815007863881 0.3147424482601497 0.018766086144524196 0.004495358583911496;
+    -1.0935466839606933 -0.25352419288687916 -0.6237454521983278 -0.08993790248165555 -0.02827914946986447]
+const pesCoeff = [0.4480425396401699 0.8960850792803398 1.3441276189205096 1.7921701585606795 2.2402126982008492 2.688255237841019 3.136297777481189 3.584340317121359;
+    -19.07993156151155 14.132538112430545 -8.669598196769785 4.440544955027029 -1.841789733545533 0.5938508511955884 -0.13456854929031054 0.017221210502076565;
+    -8.548620992980267 12.663956534909747 -11.653046381221715 7.958212156146616 -4.126000748504662 1.5964226612228885 -0.42204704205806876 0.0617266791122268]
+
 """
-    function initialize(temp, freqCutoff, eta, ωc, chi)
+    function dipole(x::T) where T<:Real
+
+Fourier sine series to compute the permannet dipole at x.
+"""
+function dipole(x::T) where T<:Real
+    mu = 0.0
+    @inbounds @simd for i in 1:5
+        ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
+        mu += dipoleCoeff[3, i] * sin(ϕ)
+    end
+    return mu
+end
+
+"""
+    function pes(x::T) where T<:Real
+
+Fourier cosine series to compute the PES at x.
+"""
+function pes(x::T) where T<:Real
+    v = 9.92928333994269962659 # a0
+    @inbounds @simd for i in eachindex(1:8)
+        ϕ = pesCoeff[1, i] * x
+        v += pesCoeff[2, i] * cos(ϕ)
+    end
+    return v
+end
+
+"""
+    function dvdr(x::T) where T<:Real
+
+Compute the derivative with respect to PES at x.
+"""
+function dvdr(x::T) where T<:Real
+    dv = 0.0
+    @inbounds @simd for i in eachindex(1:8)
+        ϕ = pesCoeff[1, i] * x
+        dv += pesCoeff[3, i] * sin(ϕ)
+    end
+    return dv
+end
+
+"""
+    function dμdr(x::T) where T<:Real
+
+Compute the derivative with respect to permannet dipole at x.
+"""
+function dμdr(x::T) where T<:Real
+    dμ = 0.0
+    for i in eachindex(1:5)
+        ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
+        dμ += dipoleCoeff[4, i] * cos(ϕ)
+    end
+    return dμ
+end
+
+"""
+    function initialize(nParticle::T1, temp::T2, freqCutoff::T2, eta::T2, ωc::T2, chi::T2) where {T1<:Integer, T2<:Real}
 
 Initialize most of the values, parameters and structs for the dynamics.
 """
 # TODO better and more flexible way to handle input values
-function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Real
+function initialize(nParticle::T1, temp::T2, freqCutoff::T2, eta::T2, ωc::T2,
+    chi::T2) where {T1<:Integer, T2<:Real}
     # convert values to au, so we can keep more human-friendly values outside
     ωc /= au2ev
     temp /= au2kelvin
     nPhoton = 1
-    nParticle = 21
     nMolecule = nParticle - nPhoton
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
     nBath = 15
@@ -349,9 +394,9 @@ function initialize(temp::T, freqCutoff::T, eta::T, ωc::T, chi::T) where T<:Rea
         similar(dummy))
     mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
         similar(mass), similar(mass), param.Δt./(2*mass), similar(mass))
-    uTotal = constructPotential(pesMol, dipole, ωc, chi, nParticle, nMolecule)
-    cache = GradientConfig(uTotal, similar(mass))
-    return param, mol, bath, uTotal, cache
+    forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
+    cache = Matrix{Float64}(undef, 2, nMolecule)
+    return param, mol, bath, forceEvaluation!, cache
 end
 
 """
@@ -384,70 +429,121 @@ Note that the returned potential is only for calclating force purpose, so it is
 inverted to avoid a "-" at each iteration.
 """
 # TODO RPMD & multi-modes?
-function constructPotential(pesMol::T1, dipole::T1, omegaC::T2, chi::T2,
-    nParticle::T3, nMolecule::T3) where {T1<:AbstractExtrapolation,
-    T2, T3<:Real}
+function constructForce(omegaC::T2, chi::T2,
+    nParticle::T3, nMolecule::T3) where {T2, T3<:Real}
     # compute the constants in advances. they can be expensive for many cycles
     kPho = 0.5 * omegaC^2
     # sqrt(2 / ω_c^3) * χ
     couple = sqrt(2/omegaC^3) * chi
+    kPho2 = -2kPho
+    sqrt2wcchi = -kPho2 * couple
     # construct an inverted total potential
     # TODO use 1 float number in this case for better performance
-    @inline function uTotalOneD(x::AbstractVector{T}) where T<:Real
-        return @fastmath -pesMol(x[1])
+    """
+        function forceOneD(f::AbstractVector{T}, x::AbstractVector{T},
+        cache::AbstractMatrix{T}) where T<:Real
+
+    Compute force for one single molecule and zero photon.
+    Cache is dummy, since I can't get the code disptached for now.
+    """
+    @inline function forceOneD!(f::AbstractVector{T}, x::AbstractVector{T},
+        cache::AbstractMatrix{T}) where T<:Real
+        f[1] = dvdr(x[1])
     end
 
-    @inline function uTotalSingleMol(x::AbstractVector{T}) where T<:Real
-        return @inbounds @fastmath -pesMol(x[1]) -
-            kPho * (x[2] + couple*dipole(x[1]))^2
+    """
+        function forceSingleMol(f::AbstractVector{T}, x::AbstractVector{T},
+        cache::AbstractMatrix{T}) where T<:Real
+
+    Compute force for one single molecule and one photon.
+    Cache is dummy, since I can't get the code disptached for now.
+    """
+    @inline function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T},
+        cache::AbstractMatrix{T}) where T<:Real
+
+        interaction = (couple * dipole(x[1]) + x[2])
+        f[1] = dvdr(x[1]) + sqrt2wcchi * dμdr(x[1]) * interaction
+        f[2] = kPho2 * interaction
     end
-    @inline function uTotalMultiMoltest(x::AbstractArray{T}) where T<:Real
-        u = 0.0
-        @inbounds @fastmath for i in 1:length(x)
-            u -= pesMol(x[i]) 
-        end
-        return u 
-    end
-    # TODO I still think it's possible to get better performance with stuff like `sum` or vector operations
-    @inline function uTotalMultiMol(x::AbstractArray{T}) where T<:Real
-        # ∑μ = sum(dipole.(view(x, 1:20)))
-        # u = sum(pesMol.(view(x, 1:20)))
-        u = 0.0
+
+    """
+        function forceiMultiMol(f::AbstractVector{T}, x::AbstractVector{T},
+        cache::AbstractMatrix{T}) where T<:Real
+
+    The ugly but faster way of implementing multi-molecule force evaluation.
+    A tidier way of coding is like below
+    function ∇u!(f::AbstractVector{T}, x::AbstractVector{T}) where {T<:Real}
         ∑μ = 0.0
-        @inbounds @fastmath for i in 1:length(x)-1
-            ∑μ += dipole(x[i])
-            u -= pesMol(x[i]) 
+        @inbounds @simd for i in eachindex(1:length(x)-1)
+            ∑μ += dipole2(x[i])
         end
-        return @fastmath u - kPho * (x[end] + couple*∑μ)^2
+        interaction = (couple * ∑μ + x[end])
+        @inbounds @simd for i in eachindex(1:length(x)-1)
+            f[i] = dvdr(x[i]) + sqrt2wcchi * dμdr(x[i]) * interaction
+        end
+        f[end] = kPho2 * interaction
+    end
+    For 100-mol, the ugly way is 1 μs (~10%) faster
+    """
+    @inline function forceMultiMol!(f::AbstractVector{T}, x::AbstractVector{T},
+        cache::AbstractMatrix{T}) where T<:Real
+
+        ∑μ = 0.0
+        @inbounds @simd for i in eachindex(1:length(x)-1)
+            xi = x[i]
+            dv = 0.0
+            μ = 0.0
+            dμ = 0.0
+            @inbounds @simd for j in eachindex(1:5)
+                ϕ1 = pesCoeff[1, j] * xi
+                ϕ2 = dipoleCoeff[1, j] * xi + dipoleCoeff[2, j]
+                dv += pesCoeff[3, j] * sin(ϕ1)
+                μ += dipoleCoeff[3, j] * sin(ϕ2)
+                dμ += dipoleCoeff[4, j] * cos(ϕ2)
+            end
+            @inbounds @simd for j in 6:8
+                ϕ1 = pesCoeff[1, j] * xi
+                dv += pesCoeff[3, j] * sin(ϕ1)
+            end
+            cache[1, i] = dv
+            cache[2, i] = dμ
+            ∑μ += μ
+        end
+        interaction = couple * ∑μ + x[end]
+        @inbounds @simd for i in eachindex(1:length(x)-1)
+            f[i] = cache[1, i] + sqrt2wcchi * cache[2, i] * interaction
+        end
+        f[end] = kPho2 * interaction
     end
     if nParticle == nMolecule
         # when there is no photon, we force the system to be 1D
         # we will still use an 1-element vector as the input
-        # return uTotalMultiMoltest
-        return uTotalOneD
+        return forceOneD!
     else
         if nMolecule == 1
             # single-molecule and single photon
-            return uTotalSingleMol
+            return forceSingleMol!
         else
             # multi-molecules and single photon
-            return uTotalMultiMol
+            return forceMultiMol!
         end
     end
 end
 
-function computeKappa(temp::T1, nTraj::T2, nStep::T2, ωc::T1, chi::T1
-    ) where {T1<:Real, T2<:Integer}
+function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
+    chi::T1) where {T1<:Real, T2<:Integer}
     rng = Random.seed!(1233+Threads.threadid())
 
-    param, mol, bath, uTotal, cache = initialize(temp, freqCutoff, eta, ωc, chi)
+    param, mol, bath, forceEval!, cache = initialize(nParticle, temp,
+        freqCutoff, eta, ωc, chi)
 
     fs0 = 0.0
     fs = zeros(nStep+1)
     q = zeros(nStep+1)
-    x0 = repeat([-2.0], param.nParticle)
+    # e = zeros(nStep+1)
+    x0 = repeat([-1.7338], param.nParticle)
     x0[1] = 0.0
-    x0[end] = 0.0
+    x0[end] = -183.71710507478846(param.nMol-1)
     # x0 = zeros(length(mol.x))
     xb0 = Random.randn(param.nBath)
     for i in 1:nTraj
@@ -457,9 +553,9 @@ function computeKappa(temp::T1, nTraj::T2, nStep::T2, ωc::T1, chi::T1
         Dynamics.velocitySampling!(bath, rng)
         copy!(mol.x, x0)
         copy!(bath.x, xb0)
-        Dynamics.force!(mol, bath, uTotal, cache)
+        Dynamics.force!(mol, bath, forceEval!, cache)
         for j in 1:1000
-            Dynamics.velocityVelert!(mol, bath, param, uTotal, cache,
+            Dynamics.velocityVelert!(mol, bath, param, forceEval!, cache,
                 cnstr=true)
             if j % 50 == 0
                 Dynamics.velocitySampling!(mol, rng)
@@ -471,11 +567,13 @@ function computeKappa(temp::T1, nTraj::T2, nStep::T2, ωc::T1, chi::T1
         v0 = mol.v[1] 
         q .= 0.0
         q[1] = v0
+        # e[1] += reactiveEnergy(mol)
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
         for j in 1:nStep
-            Dynamics.velocityVelert!(mol, bath, param, uTotal, cache)
+            Dynamics.velocityVelert!(mol, bath, param, forceEval!, cache)
             q[j+1] = mol.x[1]
+            # e[j+1] += reactiveEnergy(mol)
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3], " ", mol.x[4])
             # if q[j+1] * q[j] < 0
             #     println(output, "# here")
@@ -485,7 +583,16 @@ function computeKappa(temp::T1, nTraj::T2, nStep::T2, ωc::T1, chi::T1
         corr.fluxSide!(fs, v0, q)
     end
 
+    # e /= nTraj + 0.0
+    # open("check_energy.txt", "w") do io
+    #     writedlm(io, e)
+    # end
+
     return printKappa(fs, fs0, ωc, chi, temp, param)
+end
+
+function reactiveEnergy(p::Dynamics.ClassicalParticle)
+    return pes(p.x[1]) + 918.0 * p.v[1]^2
 end
 
 function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
@@ -609,8 +716,6 @@ end
 const freqCutoff = 500.0 / au2wn
 const eta = 4.0 * amu2au * freqCutoff
 cd("..")
-const pesMol, dipole = getPES()
-# pesMol, dipole = getPES("pes_lowres.txt", "dm_lowres.txt")
 
 function temperatureDependency()
     cd("tempDep")
@@ -655,9 +760,9 @@ end
 cd("test")
 using Profile
 function testKappa()
-    @time computeKappa(300.0, 1, 1, 0.16, 0.0)
+    @time computeKappa(2, 308.0, 1, 1, 0.16, 0.016)
     Profile.clear_malloc_data()
-    @time computeKappa(300.0, 5000, 3000, 0.16, 0.0)
+    @time computeKappa(2, 308.0, 10000, 3000, 0.16, 0.016)
 end
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)
@@ -666,8 +771,6 @@ function testPMF()
 end
 testKappa()
 # param, label, mass, bath = initialize(temp, freqCutoff, eta)
-# const pesMol, dipole = getPES("pes_low.txt", "dm_low.txt")
-# pesMol, dipole = getPES("pes_prx.txt", "dm_prx.txt")
 # using Calculus: second_derivative
 # using Optim, LineSearches
 # 
@@ -717,7 +820,6 @@ testKappa()
 #     end
 #     kappa(temp, 5000, i[1], i[2]) 
 # end
-# pesMol, dipole = getPES()
 # chi = 0.02
 # wc = vcat([0.001, 0.005, 0.01, 0.05, 0.1], collect(0.11:0.01:0.2), collect(0.3:0.1:0.9), collect(1.0:10.0))
 # 
