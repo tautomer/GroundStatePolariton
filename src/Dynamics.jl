@@ -12,16 +12,16 @@ abstract type Bath1D <: Particles1D end
 struct Parameters
     temperature::Float64
     Δt::Float64
-    nParticle::Int16
-    nMol::Int16
-    nBath::Int16
+    nParticle::Int32
+    nMol::Int32
+    nBath::Int32
     beadMol::Int16
     beadPho::Int16
     beadBath::Int16
 end
 
 mutable struct ClassicalParticle <: Particles1D
-    n::Int64
+    n::Int32
     label::Vector{String}
     m::Vector{Float64}
     σ::Vector{Float64}
