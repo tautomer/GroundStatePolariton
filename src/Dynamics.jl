@@ -119,7 +119,7 @@ function force!(p::Particles1D, b::Bath1D, ∇u!::Function, cache::AbstractMatri
     ∇u!(p.f, p.x, cache)
     index = 0
     for j in 1:p.n
-        @simd for i in 1:b.n
+        @inbounds @simd for i in 1:b.n
             index += 1
             tmp = b.c_mω2[i] * p.x[j] - b.x[index]
             b.f[index] = b.mω2[i] * tmp

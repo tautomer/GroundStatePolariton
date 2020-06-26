@@ -2,22 +2,10 @@ module Auxiliary
 """
     Some physical constants useful to the simulation
 """
-module Constants
 
-export au2wn, au2ev, au2kelvin, au2kcal, amu2au, au2fs
-
-au2wn = 219474.63068
-au2ev = 27.2113961
-au2kelvin = 3.15775e5
-au2kcal = 627.509
-amu2au = 1836.0
-au2fs = 2.41888e-2
-
-end
-
-using .Constants
+using Constants
 using Calculus
-using Optim, LineSearches
+using IntervalArithmetic, IntervalRootFinding
 
 """
     normalModeAnalysis(x0::Array{Float64,1})
@@ -48,43 +36,26 @@ function normalModeAnalysis(u::Function, x0::Array{Float64,1}, omegaC::Float64)
 end
 
 """
-    optPES(targetFunc::Function, x0::Array{Float64, 1}, algor; maxTries=5)
+    function saddlePoints(f::Function, low::T, high::T) where T<:Real
 
-`optPES` will find a local minimum on the PES with Optim package
-minimum location and value are returned
+Find the roots of a given univariate function f in a given range [low, high],
+and return a sorted vector of roots via `IntervalRootFinding`. Note that only 
+a pure Julia function will work with `IntervalRootFinding`.
 """
-function optPES(targetFunc::Function, x0::Array{Float64, 1}, algor;
-    maxTries=5)
-
-    n = 0
-    local minLoc, minVal
-    while n < maxTries
-        result = optimize(x -> targetFunc(x[1], x[2]), x0, algor())
-        minLoc = Optim.minimizer(result)
-        minVal = Optim.minimum(result)
-        if Optim.converged(result)
-            if Optim.iterations(result) == 0
-                println("Warning: Starting point is a stationary point.
-                    Output $minLoc is not necessarily a minimum.")
-            end
-            break
-        else
-            x0 = minLoc
-            n += 1
-            if n > maxTries
-                throw("Hit max number of tries in `optPES`.
-                    Consider using different parameters.")
-            end
-        end
+function saddlePoints(f::Function, low::T, high::T) where T<:Real
+    result = roots(f, low..high)
+    loc = Vector{Float64}(undef, 0)
+    for i in result
+        push!(loc, mid(i.interval))
     end
-    return minLoc, minVal
+    return sort(loc)
 end
 
 end
 
 include("CorrelationFunctions.jl")
 include("Dynamics.jl")
-include("Iinitialization.jl")
+include("Initialization.jl")
 
 using DelimitedFiles
 using Printf
@@ -93,7 +64,6 @@ using WHAM
 using Statistics: mean, varm
 using ..Dynamics
 using ..Auxiliary
-using .Auxiliary.Constants: au2wn, au2ev, au2kelvin, au2kcal, amu2au, au2fs
 using ..CorrelationFunctions
 
 const corr = CorrelationFunctions
@@ -103,18 +73,16 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
     rng = Random.seed!(1233+Threads.threadid())
 
     param, mol, bath, forceEval!, cache = initialize(nParticle, temp,
-        freqCutoff, eta, ωc, chi)
+        ωc, chi)
 
     fs0 = 0.0
     fs = zeros(nStep+1)
     q = zeros(nStep+1)
     # e = zeros(nStep+1)
-    x0 = repeat([-1.7338], param.nParticle)
-    x0[1] = 0.0
-    x0[end] = -183.71710507478846(param.nMol-1)
-    # x0 = zeros(length(mol.x))
-    xb0 = Random.randn(param.nBath)
-    for i in 1:nTraj
+
+    x0 = copy(mol.x)
+    xb0 = copy(bath.x)
+    @inbounds for i in 1:nTraj
         # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
         Dynamics.velocitySampling!(mol, rng)
@@ -122,7 +90,7 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
         copy!(mol.x, x0)
         copy!(bath.x, xb0)
         Dynamics.force!(mol, bath, forceEval!, cache)
-        for j in 1:1000
+        @inbounds for j in 1:1000
             Dynamics.velocityVelert!(mol, bath, param, forceEval!, cache,
                 cnstr=true)
             if j % 50 == 0
@@ -138,7 +106,7 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
         # e[1] += reactiveEnergy(mol)
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
-        for j in 1:nStep
+        @inbounds for j in 1:nStep
             Dynamics.velocityVelert!(mol, bath, param, forceEval!, cache)
             q[j+1] = mol.x[1]
             # e[j+1] += reactiveEnergy(mol)
@@ -326,12 +294,11 @@ function temperatureDependency()
 end
 
 # temperatureDependency()
-cd("test")
-using Profile
+cd("energy")
+using StatProfilerHTML
 function testKappa()
-    @time computeKappa(2, 300.0, 1, 1, 0.16, 0.048)
-    Profile.clear_malloc_data()
-    @time computeKappa(2, 300.0, 10000, 3000, 0.16, 0.048)
+    @time computeKappa(50, 300.0, 1, 1, 0.16, 0.048)
+    @btime computeKappa(50, 300.0, 100, 3000, 0.16, 0.048)
 end
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)

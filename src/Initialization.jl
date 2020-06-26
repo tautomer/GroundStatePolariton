@@ -1,13 +1,22 @@
 using Interpolations: LinearInterpolation, Line, AbstractExtrapolation
+using Constants
 
 # Fourier series fitted parameters
+# dipole
 const dipoleCoeff = [0.8076027811523625 3.3398810618390105 1.9817646321501963 4.792576448227526 6.290743873263665;
     3.141592653589415 3.141592653594254 -3.1415926535898864 3.1415926535970247 3.1415926535721725;
     1.3540650298409318 0.07590815007863881 0.3147424482601497 0.018766086144524196 0.004495358583911496;
     -1.0935466839606933 -0.25352419288687916 -0.6237454521983278 -0.08993790248165555 -0.02827914946986447]
+# potenial
 const pesCoeff = [0.4480425396401699 0.8960850792803398 1.3441276189205096 1.7921701585606795 2.2402126982008492 2.688255237841019 3.136297777481189 3.584340317121359;
     -19.07993156151155 14.132538112430545 -8.669598196769785 4.440544955027029 -1.841789733545533 0.5938508511955884 -0.13456854929031054 0.017221210502076565;
     -8.548620992980267 12.663956534909747 -11.653046381221715 7.958212156146616 -4.126000748504662 1.5964226612228885 -0.42204704205806876 0.0617266791122268]
+
+# equilibirium position of R coordinate under the current potenial
+const xeq = -1.735918600503033
+const mueq = -1.2197912355997298
+const freqCutoff = 500.0 / au2wn
+const eta = 4.0 * amu2au * freqCutoff
 
 """
     function dipole(x::T) where T<:Real
@@ -66,16 +75,13 @@ function dμdr(x::T) where T<:Real
 end
 
 """
-    function initialize(nParticle::T1, temp::T2, freqCutoff::T2, eta::T2, ωc::T2, chi::T2) where {T1<:Integer, T2<:Real}
+    function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Integer, T2<:Real}
 
 Initialize most of the values, parameters and structs for the dynamics.
 """
 # TODO better and more flexible way to handle input values
-function initialize(nParticle::T1, temp::T2, freqCutoff::T2, eta::T2, ωc::T2,
-    chi::T2) where {T1<:Integer, T2<:Real}
-    # convert values to au, so we can keep more human-friendly values outside
-    ωc /= au2ev
-    temp /= au2kelvin
+function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Integer, T2<:Real}
+
     nPhoton = 1
     nMolecule = nParticle - nPhoton
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
@@ -83,18 +89,79 @@ function initialize(nParticle::T1, temp::T2, freqCutoff::T2, eta::T2, ωc::T2,
     dt = 4.0
 
     # compute coefficients for bath modes
-    nb = real(nBath)
-    # bath mode frequencies
-    ω = -freqCutoff * log.((collect(1.0:nb).-0.5) / nb)
-    # bath force constants
-    mω2 = ω.^2 * amu2au
-    # bath coupling strength
-    c = sqrt(2eta * amu2au * freqCutoff / nb / pi) * ω
-    # c/mω^2, for force evaluation
-    c_mω2 = c ./ mω2
+    ω, mω2, c, c_mω2 = computeBathParameters(nBath)
 
-    # check the number of molecules and photons
-    if nParticle != nMolecule # && chi != 0.0
+    # check if the number of molecules and photons make sense
+    nParticle, nMolecule, label, mass = checkParticleNumbers(nParticle, nMolecule, chi)
+
+    # the suffix for all output file names to identify the setup and avoid overwritting
+    flnmID = string(ωc, "_", chi, "_", temp, "_", nMolecule, ".txt")
+    # convert values to au, so we can keep more human-friendly values outside
+    ωc /= au2ev
+    temp /= au2kelvin
+    couple = sqrt(2/ωc^3) * chi
+
+    # array to store equilibrated molecule and photon coordinates for the next trajectory
+    x0 = repeat([xeq], nParticle)
+    x0[1] = 0.0
+    if nMolecule > 1
+        x0[end] = couple * mueq * (nMolecule-1)
+    else
+        x0[end] = 0.0
+    end
+    # total number of bath modes
+    nBathTotal = nMolecule * nBath
+    # array to store equilibrated bath coordinates for the next trajectory
+    xb0 = Vector{Float64}(undef, nBathTotal)
+    index = 0
+    for i in eachindex(1:nMolecule)
+        @inbounds @simd for j in eachindex(1:nBath)
+            index += 1
+            xb0[index] = x0[i] * c_mω2[j]
+        end
+    end
+
+    param = Dynamics.Parameters(temp, dt, nParticle, nMolecule, nBathTotal, 1, 1, 1)
+    bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
+        ω, c, mω2, c_mω2, xb0, similar(xb0), param.Δt/(2*amu2au),
+        similar(xb0))
+    mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
+        x0, similar(mass), param.Δt./(2*mass), similar(mass))
+    # obatin the gradient of the corresponding potential
+    forceEvaluation! = constructForce(ωc, couple, nParticle, nMolecule)
+    # pre-allocated array to avoid allocations for force evaluation
+    cache = Matrix{Float64}(undef, 2, nMolecule)
+    return param, mol, bath, forceEvaluation!, cache, flnmID
+end
+
+function computeBathParameters(nBath::T) where T<:Integer
+    nb = convert(Float64, nBath)
+    ω = Vector{Float64}(undef, nBath)
+    mω2 = similar(ω)
+    c = similar(ω)
+    c_mω2 = similar(ω)
+    tmp = sqrt(2eta * amu2au * freqCutoff / nb / pi)
+    @inbounds @simd for i in eachindex(1:nBath)
+        # bath mode frequencies
+        ω[i] = -freqCutoff * log((i-0.5) / nb)
+        # bath force constants
+        mω2[i] = ω[i]^2 * amu2au
+        # bath coupling strength
+        c[i] = tmp * ω[i]
+        # c/mω^2, for force evaluation
+        c_mω2[i] = c[i] / mω2[i]
+    end
+    return ω, mω2, c, c_mω2 
+end
+
+"""
+    function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2) where {T1<:Integer, T2<:Real}
+
+Check if the number of total particle, molecules and photons make sense. Should
+not be very meaningful for now. Keep for future.
+"""
+function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2) where {T1<:Integer, T2<:Real}
+    if nParticle != nMolecule && chi != 0.0
         # χ != 0 
         if nParticle - nMolecule > 1
             println("Multi-modes not supported currently. Reduce to single-mode.")
@@ -113,22 +180,7 @@ function initialize(nParticle::T1, temp::T2, freqCutoff::T2, eta::T2, ωc::T2,
     end
     label = vcat(repeat(["mol"], nMolecule), label)
     mass = vcat(repeat([amu2au], nMolecule), mass)
-    if nMolecule > 1
-        nBathTotal = nMolecule * nBath
-        dummy = Vector{Float64}(undef, nBathTotal)
-    else
-        nBathTotal = nBath
-        dummy = ω
-    end
-    param = Dynamics.Parameters(temp, dt, nParticle, nMolecule, nBathTotal, 1, 1, 1)
-    bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
-        ω, c, mω2, c_mω2, similar(dummy), similar(dummy), param.Δt/(2*amu2au),
-        similar(dummy))
-    mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
-        similar(mass), similar(mass), param.Δt./(2*mass), similar(mass))
-    forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
-    cache = Matrix{Float64}(undef, 2, nMolecule)
-    return param, mol, bath, forceEvaluation!, cache
+    return nParticle, nMolecule, label, mass
 end
 
 """
@@ -150,9 +202,9 @@ function getPES(pes="pes.txt"::String, dm="dm.txt"::String)
         interpolate(view(dipoleRaw, :, 1), view(dipoleRaw, :, 2))
 end
 
+using BenchmarkTools
 """
-    function constructPotential(pesMol::T1, dipole::T1, omegaC::T2, chi::T2,
-        nParticle::T2, nMolecule::T2) where {T1<:AbstractExtrapolation, T2<:Real}
+    function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) where {T1, T2<:Real}
 
 Function to construct the total potential of the polaritonic system for different
 number of Molecules and photons.
@@ -161,12 +213,10 @@ Note that the returned potential is only for calclating force purpose, so it is
 inverted to avoid a "-" at each iteration.
 """
 # TODO RPMD & multi-modes?
-function constructForce(omegaC::T2, chi::T2,
-    nParticle::T3, nMolecule::T3) where {T2, T3<:Real}
+function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) where {T1, T2<:Real}
     # compute the constants in advances. they can be expensive for many cycles
     kPho = 0.5 * omegaC^2
     # sqrt(2 / ω_c^3) * χ
-    couple = sqrt(2/omegaC^3) * chi
     kPho2 = -2kPho
     sqrt2wcchi = -kPho2 * couple
     # construct an inverted total potential
@@ -217,7 +267,7 @@ function constructForce(omegaC::T2, chi::T2,
     end
     For 100-mol, the ugly way is 1 μs (~10%) faster
     """
-    @inline function forceMultiMol!(f::AbstractVector{T}, x::AbstractVector{T},
+    function forceMultiMol!(f::AbstractVector{T}, x::AbstractVector{T},
         cache::AbstractMatrix{T}) where T<:Real
 
         ∑μ = 0.0
