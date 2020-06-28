@@ -79,35 +79,39 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
     fs = zeros(nStep+1)
     q = zeros(nStep+1)
     # e = zeros(nStep+1)
-
+    # flnm0 = string("t0_", param.nMol, ".txt")
+    # flnm10 = string("t10_", param.nMol, ".txt")
+    # t0 = open(flnm0, "w")
+    # t10 = open(flnm10, "w")
     x0 = copy(mol.x)
     xb0 = copy(bath.x)
     @inbounds for i in 1:nTraj
         # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
         Dynamics.velocitySampling!(mol, rng)
-        Dynamics.velocitySampling!(bath, rng)
+        # Dynamics.velocitySampling!(bath, rng)
         copy!(mol.x, x0)
         copy!(bath.x, xb0)
         Dynamics.force!(mol, bath, forceEval!, cache)
         @inbounds for j in 1:1000
-            Dynamics.velocityVelert!(mol, bath, param, forceEval!, cache,
+            Dynamics.langevinDynamics!(mol, bath, param, forceEval!, cache,
                 cnstr=true)
             if j % 50 == 0
                 Dynamics.velocitySampling!(mol, rng)
-                Dynamics.velocitySampling!(bath, rng)
+                # Dynamics.velocitySampling!(bath, rng)
             end
         end
         copy!(x0, mol.x)
         copy!(xb0, bath.x)
         v0 = mol.v[1] 
+        # println(t0, v0)
         q .= 0.0
         q[1] = v0
         # e[1] += reactiveEnergy(mol)
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
         @inbounds for j in 1:nStep
-            Dynamics.velocityVelert!(mol, bath, param, forceEval!, cache)
+            Dynamics.langevinDynamics!(mol, bath, param, forceEval!, cache)
             q[j+1] = mol.x[1]
             # e[j+1] += reactiveEnergy(mol)
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3], " ", mol.x[4])
@@ -115,10 +119,12 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
             #     println(output, "# here")
             # end
         end
+        # println(t10, mol.v[1])
         # close(output)
         corr.fluxSide!(fs, v0, q)
     end
-
+    # close(t0)
+    # close(t10)
     # e /= nTraj + 0.0
     # open("check_energy.txt", "w") do io
     #     writedlm(io, e)
@@ -134,7 +140,7 @@ end
 function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
     param::Dynamics.Parameters) where T <: AbstractFloat
     fs /= fs0
-    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, ".txt")
+    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "lagevin.txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
     @printf(fsOut, "# ω_c=%7.3e,χ=%6.4g \n", ωc, chi)
@@ -297,8 +303,8 @@ end
 cd("energy")
 using StatProfilerHTML
 function testKappa()
-    @time computeKappa(50, 300.0, 1, 1, 0.16, 0.048)
-    @btime computeKappa(50, 300.0, 100, 3000, 0.16, 0.048)
+    @time computeKappa(2, 300.0, 1, 10000, 0.16, 0.0048)
+    @time computeKappa(2, 300.0, 1000, 1000, 0.16, 0.0048)
 end
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)

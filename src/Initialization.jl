@@ -3,11 +3,12 @@ using Constants
 
 # Fourier series fitted parameters
 # dipole
-const dipoleCoeff = [0.8076027811523625 3.3398810618390105 1.9817646321501963 4.792576448227526 6.290743873263665;
-    3.141592653589415 3.141592653594254 -3.1415926535898864 3.1415926535970247 3.1415926535721725;
-    1.3540650298409318 0.07590815007863881 0.3147424482601497 0.018766086144524196 0.004495358583911496;
-    -1.0935466839606933 -0.25352419288687916 -0.6237454521983278 -0.08993790248165555 -0.02827914946986447]
+const dipoleCoeff = [0.8017194824351892 3.2923071635398693 1.9571015898154989 4.721532196133278 7.745224719320653 6.217082808943054;
+    3.1415926535894014 3.1415926535945484 -3.1415926535898957 3.141592653598072 3.141592653535209 -1.760747833413431e-11;
+    1.3496422641395616 0.07841064324878252 0.31897867072301 0.019819260283106183 0.0012061473577049471 -0.005001264129667085;
+    -1.0820344974786262 -0.2581519224657358 -0.6242736635892374 -0.09357727553023139 -0.009341882330039646 0.031093273243536782]
 # potenial
+const a0 = 9.92928333994269962659 
 const pesCoeff = [0.4480425396401699 0.8960850792803398 1.3441276189205096 1.7921701585606795 2.2402126982008492 2.688255237841019 3.136297777481189 3.584340317121359;
     -19.07993156151155 14.132538112430545 -8.669598196769785 4.440544955027029 -1.841789733545533 0.5938508511955884 -0.13456854929031054 0.017221210502076565;
     -8.548620992980267 12.663956534909747 -11.653046381221715 7.958212156146616 -4.126000748504662 1.5964226612228885 -0.42204704205806876 0.0617266791122268]
@@ -25,7 +26,7 @@ Fourier sine series to compute the permannet dipole at x.
 """
 function dipole(x::T) where T<:Real
     mu = 0.0
-    @inbounds @simd for i in 1:5
+    @inbounds @simd for i in 1:6
         ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
         mu += dipoleCoeff[3, i] * sin(ϕ)
     end
@@ -38,7 +39,7 @@ end
 Fourier cosine series to compute the PES at x.
 """
 function pes(x::T) where T<:Real
-    v = 9.92928333994269962659 # a0
+    v = a0
     @inbounds @simd for i in eachindex(1:8)
         ϕ = pesCoeff[1, i] * x
         v += pesCoeff[2, i] * cos(ϕ)
@@ -46,6 +47,16 @@ function pes(x::T) where T<:Real
     return v
 end
 
+
+function ufit(x::AbstractVector{T}) where {T<:Real}
+    ∑μ = 0.0
+    ∑v = 0.0
+    @inbounds @simd for i in eachindex(1:length(x)-1)
+        ∑μ += dipole(x[i])
+        ∑v += pes(x[i])
+    end
+    return ∑v + 1.728705305973675e-5 * (15.055424826054347 * ∑μ + x[end])^2
+end
 """
     function dvdr(x::T) where T<:Real
 
@@ -67,7 +78,7 @@ Compute the derivative with respect to permannet dipole at x.
 """
 function dμdr(x::T) where T<:Real
     dμ = 0.0
-    for i in eachindex(1:5)
+    for i in eachindex(1:6)
         ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
         dμ += dipoleCoeff[4, i] * cos(ϕ)
     end
@@ -276,24 +287,25 @@ function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) wh
             dv = 0.0
             μ = 0.0
             dμ = 0.0
-            @inbounds @simd for j in eachindex(1:5)
+            @inbounds @simd for j in eachindex(1:6)
                 ϕ1 = pesCoeff[1, j] * xi
                 ϕ2 = dipoleCoeff[1, j] * xi + dipoleCoeff[2, j]
                 dv += pesCoeff[3, j] * sin(ϕ1)
                 μ += dipoleCoeff[3, j] * sin(ϕ2)
                 dμ += dipoleCoeff[4, j] * cos(ϕ2)
             end
-            @inbounds @simd for j in 6:8
+            @inbounds @simd for j in 7:8
                 ϕ1 = pesCoeff[1, j] * xi
                 dv += pesCoeff[3, j] * sin(ϕ1)
             end
             cache[1, i] = dv
-            cache[2, i] = dμ
-            ∑μ += μ
+            cache[2, i] = dμ # * (-1)^i
+            ∑μ += μ # * (-1)^i
         end
         interaction = couple * ∑μ + x[end]
+        tmp = interaction * sqrt2wcchi
         @inbounds @simd for i in eachindex(1:length(x)-1)
-            f[i] = cache[1, i] + sqrt2wcchi * cache[2, i] * interaction
+            f[i] = cache[1, i] + tmp * cache[2, i]
         end
         f[end] = kPho2 * interaction
     end

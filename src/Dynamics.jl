@@ -83,6 +83,45 @@ function velocityUpdate!(p::Particles1D, b::Bath1D)
     @. b.v += b.f * b.dtby2m
 end
 
+const fold = Vector{Float64}(undef, 1001)
+const acc = Vector{Float64}(undef, 1000)
+function langevinDynamics!(p::Particles1D, b::Bath1D, param::Parameters,
+    ∇u!::Function, cache::AbstractMatrix{T}; cnstr=true) where T <: AbstractFloat
+    γ = 0.0 # 0.0091126705341906 / 50.0
+    σ = sqrt(2γ/1052.58/1836.0)
+    r1 = 0.5Random.randn()
+    r2 = 0.28867513459481288225457439025098Random.randn()
+    copy!(fold, p.f)
+    for i in eachindex(1:p.n)
+        acc[i] = param.Δt^2 / 2.0 / 1836.0 * p.f[i] - 8.0 * γ * p.v[i] + 8.0 * σ * (r1+r2)
+        p.x[i] += p.v[i] * param.Δt + acc[i]
+    end
+    p.x[1] = 0.0
+    p.x[end] += p.v[end] * param.Δt + p.f[end] * 8.0
+    force!(p, b, ∇u!, cache)
+    for i in eachindex(1:p.n)
+        p.v[i] += (fold[i]+p.f[i]) * p.dtby2m[i] - 4.0 * γ * p.v[i] + 2.0 * σ * Random.randn() - γ * acc[i]
+    end
+    p.v[end] += (fold[end]+p.f[end]) * 2.0
+end
+function langevinDynamics!(p::Particles1D, b::Bath1D, param::Parameters,
+    ∇u!::Function, cache::AbstractMatrix{T}) where T <: AbstractFloat
+    γ = 0.0 #0.0091126705341906 / 50.0
+    σ = sqrt(2γ/1052.58/1836.0)
+    r1 = 0.5Random.randn()
+    r2 = 0.28867513459481288225457439025098Random.randn()
+    copy!(fold, p.f)
+    for i in eachindex(1:p.n)
+        acc[i] = param.Δt^2 / 2.0 / 1836.0 * p.f[i] - 8.0 * γ * p.v[i] + 8.0 * σ * (r1+r2)
+        p.x[i] += p.v[i] * param.Δt + acc[i]
+    end
+    p.x[end] += p.v[end] * param.Δt + p.f[end] * 8.0
+    force!(p, b, ∇u!, cache)
+    for i in eachindex(1:p.n)
+        p.v[i] += (fold[i]+p.f[i]) * p.dtby2m[i] - 4.0 * γ * p.v[i] + 2.0 * σ * Random.randn() - γ * acc[i]
+    end
+    p.v[end] += (fold[end]+p.f[end]) * 2.0
+end
 function velocityVelert!(p::Particles1D, b::Bath1D, param::Parameters,
     ∇u!::Function, cache::AbstractMatrix{T}; cnstr=true) where T <: AbstractFloat
 
@@ -117,15 +156,15 @@ end
 function force!(p::Particles1D, b::Bath1D, ∇u!::Function, cache::AbstractMatrix{T}) where T<:AbstractFloat
 
     ∇u!(p.f, p.x, cache)
-    index = 0
-    for j in 1:p.n
-        @inbounds @simd for i in 1:b.n
-            index += 1
-            tmp = b.c_mω2[i] * p.x[j] - b.x[index]
-            b.f[index] = b.mω2[i] * tmp
-            p.f[j] -= b.c[i] * tmp
-        end
-    end
+    # index = 0
+    # for j in 1:p.n
+    #     @inbounds @simd for i in 1:b.n
+    #         index += 1
+    #         tmp = b.c_mω2[i] * p.x[j] - b.x[index]
+    #         b.f[index] = b.mω2[i] * tmp
+    #         p.f[j] -= b.c[i] * tmp
+    #     end
+    # end
 end
 
 function force!(p::Particles1D, b::Bath1D, ∇u!::Function, cache::AbstractMatrix{T},
