@@ -17,7 +17,7 @@ function getCoefficients(pes::T1="pes.txt", dm::T1="dm.txt";
         end
         return coefficients["dm"], coefficients["a0"], coefficients["pes"]
     end
-    raw, order = fitData(dm, :sine, minOrder=5, convergence=7e-4)
+    raw, order = fitData(dm, :sine, minOrder=6, convergence=7e-4)
     raw = reshape(raw, 3, order)
     @views raw[1, :] /= 2.0
     dmCoeff = vcat(raw, (-raw[1, :].*raw[3, :])')

@@ -47,7 +47,6 @@ function pes(x::T) where T<:Real
     return v
 end
 
-
 function ufit(x::AbstractVector{T}) where {T<:Real}
     ∑μ = 0.0
     ∑v = 0.0
@@ -98,6 +97,10 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Intege
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
     nBath = 15
     dt = 4.0
+    ν = 0.05
+    τ = floor(Int64, 1/ν)
+    # collisionFrequency 
+    z = ν * dt
 
     # compute coefficients for bath modes
     ω, mω2, c, c_mω2 = computeBathParameters(nBath)
@@ -109,12 +112,14 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Intege
     flnmID = string(ωc, "_", chi, "_", temp, "_", nMolecule, ".txt")
     # convert values to au, so we can keep more human-friendly values outside
     ωc /= au2ev
+    chi /= au2ev
     temp /= au2kelvin
     couple = sqrt(2/ωc^3) * chi
 
     # array to store equilibrated molecule and photon coordinates for the next trajectory
     x0 = repeat([xeq], nParticle)
     x0[1] = 0.0
+    # x0[end] = couple * mueq * nMolecule
     if nMolecule > 1
         x0[end] = couple * mueq * (nMolecule-1)
     else
@@ -132,7 +137,8 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Intege
         end
     end
 
-    param = Dynamics.Parameters(temp, dt, nParticle, nMolecule, nBathTotal, 1, 1, 1)
+    param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
+        nBathTotal, 1, 1, 1)
     bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
         ω, c, mω2, c_mω2, xb0, similar(xb0), param.Δt/(2*amu2au),
         similar(xb0))
@@ -141,7 +147,9 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Intege
     # obatin the gradient of the corresponding potential
     forceEvaluation! = constructForce(ωc, couple, nParticle, nMolecule)
     # pre-allocated array to avoid allocations for force evaluation
-    cache = Matrix{Float64}(undef, 2, nMolecule)
+    # cache = Matrix{Float64}(undef, 2, nMolecule)
+    cache = Dynamics.DynamicsCache(zeros(3), similar(mass), similar(mass),
+        Matrix{Float64}(undef, 2, nMolecule), similar(xb0))
     return param, mol, bath, forceEvaluation!, cache, flnmID
 end
 
@@ -213,7 +221,6 @@ function getPES(pes="pes.txt"::String, dm="dm.txt"::String)
         interpolate(view(dipoleRaw, :, 1), view(dipoleRaw, :, 2))
 end
 
-using BenchmarkTools
 """
     function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) where {T1, T2<:Real}
 
@@ -256,7 +263,16 @@ function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) wh
 
         interaction = (couple * dipole(x[1]) + x[2])
         f[1] = dvdr(x[1]) + sqrt2wcchi * dμdr(x[1]) * interaction
+        # println(f[1], " ", dvdr(x[1]), " ", interaction, " ", dμdr(x[1]))
         f[2] = kPho2 * interaction
+    end
+
+    function pot(x::AbstractVector{T}) where {T<:Real}
+        return pes(x[1]) + kPho * (couple * dipole(x[1]) + x[2])^2
+    end
+
+    function energy(x::AbstractVector{T}, v::AbstractVector{T}) where {T<:Real}
+        return 918.0v[1]^2 + 0.5v[2]^2 + pot(x)
     end
 
     """
@@ -309,6 +325,54 @@ function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) wh
         end
         f[end] = kPho2 * interaction
     end
+
+    # function forceMultiMol2!(f::AbstractVector{T}, x::AbstractVector{T},
+    #     cache::AbstractMatrix{T}) where T<:Real
+
+    #     ∑μ = 0.0
+    #     xi = x[1]
+    #     dv = 0.0
+    #     μ = 0.0
+    #     dμ = 0.0
+    #     @inbounds @simd for j in eachindex(1:6)
+    #         ϕ1 = pesCoeff[1, j] * xi
+    #         ϕ2 = dipoleCoeff[1, j] * xi + dipoleCoeff[2, j]
+    #         dv += pesCoeff[3, j] * sin(ϕ1)
+    #         μ += dipoleCoeff[3, j] * sin(ϕ2)
+    #         dμ += dipoleCoeff[4, j] * cos(ϕ2)
+    #     end
+    #     @inbounds @simd for j in 7:8
+    #         ϕ1 = pesCoeff[1, j] * xi
+    #         dv += pesCoeff[3, j] * sin(ϕ1)
+    #     end
+    #     ∑μ += μ
+    #     cache[1, 1] = dv
+    #     cache[2, 1] = dμ 
+    #     xi = x[2]
+    #     dv = 0.0
+    #     μ = 0.0
+    #     dμ = 0.0
+    #     @inbounds @simd for j in eachindex(1:6)
+    #         ϕ1 = pesCoeff[1, j] * xi
+    #         ϕ2 = dipoleCoeff[1, j] * xi + dipoleCoeff[2, j]
+    #         dv += pesCoeff[3, j] * sin(ϕ1)
+    #         μ += dipoleCoeff[3, j] * sin(ϕ2)
+    #         dμ += dipoleCoeff[4, j] * cos(ϕ2)
+    #     end
+    #     @inbounds @simd for j in 7:8
+    #         ϕ1 = pesCoeff[1, j] * xi
+    #         dv += pesCoeff[3, j] * sin(ϕ1)
+    #     end
+    #     ∑μ += μ * sqrtN
+    #     cache[1, 2] = dv
+    #     cache[2, 2] = dμ * sqrtN
+    #     interaction = couple * ∑μ + x[end]
+    #     tmp = interaction * sqrt2wcchi
+    #     @inbounds @simd for i in eachindex(1:length(x)-1)
+    #         f[i] = cache[1, i] + tmp * cache[2, i]
+    #     end
+    #     f[end] = kPho2 * interaction
+    # end
     if nParticle == nMolecule
         # when there is no photon, we force the system to be 1D
         # we will still use an 1-element vector as the input
@@ -323,3 +387,5 @@ function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) wh
         end
     end
 end
+
+const sqrtN = 1

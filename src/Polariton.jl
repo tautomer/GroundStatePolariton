@@ -56,6 +56,7 @@ end
 include("CorrelationFunctions.jl")
 include("Dynamics.jl")
 include("Initialization.jl")
+include("Fitting.jl")
 
 using DelimitedFiles
 using Printf
@@ -70,49 +71,58 @@ const corr = CorrelationFunctions
 
 function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
     chi::T1) where {T1<:Real, T2<:Integer}
-    rng = Random.seed!(1233+Threads.threadid())
 
-    param, mol, bath, forceEval!, cache = initialize(nParticle, temp,
+    rng = Random.seed!(1233+Threads.threadid())
+    param, mol, bath, forceEval!, cache, flnmID = initialize(nParticle, temp,
         ωc, chi)
 
+    dir = string(param.nMol)
+    # if ! isdir(dir)
+    #     mkdir(dir)
+    # end
+    # cd(string(param.nMol))
     fs0 = 0.0
-    fs = zeros(nStep+1)
-    q = zeros(nStep+1)
+    fs = zeros(nStep)
+    q = zeros(nStep)
     # e = zeros(nStep+1)
     # flnm0 = string("t0_", param.nMol, ".txt")
     # flnm10 = string("t10_", param.nMol, ".txt")
     # t0 = open(flnm0, "w")
     # t10 = open(flnm10, "w")
-    x0 = copy(mol.x)
+    Dynamics.velocitySampling!(mol, rng)
+    Dynamics.velocitySampling!(bath, rng)
+    Dynamics.force!(mol, bath, forceEval!, cache)
+    Dynamics.equilibration!(mol, bath, 8000, rng, param, forceEval!, cache)
+    xm0 = copy(mol.x)
     xb0 = copy(bath.x)
+    vm0 = copy(mol.v)
+    vb0 = copy(bath.v)
     @inbounds for i in 1:nTraj
-        # traj = string("traj_", i, ".txt")
+        # traj = string("traj_", param.nMol, "_test.txt")
         # output = open(traj, "w")
-        Dynamics.velocitySampling!(mol, rng)
-        # Dynamics.velocitySampling!(bath, rng)
-        copy!(mol.x, x0)
+        copy!(mol.x, xm0)
         copy!(bath.x, xb0)
-        Dynamics.force!(mol, bath, forceEval!, cache)
-        @inbounds for j in 1:1000
-            Dynamics.langevinDynamics!(mol, bath, param, forceEval!, cache,
-                cnstr=true)
-            if j % 50 == 0
-                Dynamics.velocitySampling!(mol, rng)
-                # Dynamics.velocitySampling!(bath, rng)
-            end
-        end
-        copy!(x0, mol.x)
+        copy!(mol.v, vm0)
+        copy!(bath.v, vb0)
+        Dynamics.equilibration!(mol, bath, 1000, rng, param, forceEval!, cache)
+        copy!(xm0, mol.x)
         copy!(xb0, bath.x)
+        copy!(vm0, mol.v)
+        copy!(vb0, bath.v)
+        Dynamics.velocitySampling!(mol, rng)
+        Dynamics.velocitySampling!(bath, rng)
         v0 = mol.v[1] 
         # println(t0, v0)
-        q .= 0.0
-        q[1] = v0
         # e[1] += reactiveEnergy(mol)
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
         @inbounds for j in 1:nStep
-            Dynamics.langevinDynamics!(mol, bath, param, forceEval!, cache)
-            q[j+1] = mol.x[1]
+            Dynamics.velocityVerlet!(mol, bath, param, forceEval!, cache)
+            q[j] = mol.x[1]
+            # println(output, j, " ", mol.x[1])
+            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[end])
+            # println(output, j, " ", mean(@view mol.x[2:end-1]))
+            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", 918.0 * mol.v[1]^2)
             # e[j+1] += reactiveEnergy(mol)
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3], " ", mol.x[4])
             # if q[j+1] * q[j] < 0
@@ -121,6 +131,7 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
         end
         # println(t10, mol.v[1])
         # close(output)
+        # fs .+= q
         corr.fluxSide!(fs, v0, q)
     end
     # close(t0)
@@ -139,16 +150,20 @@ end
 
 function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
     param::Dynamics.Parameters) where T <: AbstractFloat
-    fs /= fs0
-    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "lagevin.txt")
+    fs ./= fs0
+    # @. fs /= 100.0
+    flnm = string("fs_", ωc, "_", temp, "_", param.nMol, "_v0.txt")
+    # flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_v0.txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
     @printf(fsOut, "# ω_c=%7.3e,χ=%6.4g \n", ωc, chi)
+    @printf(fsOut, "%5.2f %11.8g\n", 0.0, 1.0)
     for i in 1:length(fs)
         @printf(fsOut, "%5.2f %11.8g\n", (i-1)*param.Δt*2.4189e-2, fs[i])
     end
     close(fsOut)
     println("Results written to file: $flnm")
+    # cd("..")
     return fs
 end
 
@@ -194,7 +209,7 @@ function umbrellaSampling(temp::T1, nw::T2, nStep::T2, ks::T1, bound::Vector{T1}
         bath.x = Random.randn(param.nBath)
         Dynamics.force!(mol, bath, forceEval!, cache)
         for j in 1:5000
-            Dynamics.velocityVelert!(mol, bath, param, forceEval!, cache, ks, x0)
+            Dynamics.velocityVerlet!(mol, bath, param, forceEval!, cache, ks, x0)
             if j % 25 == 0
                 Dynamics.velocitySampling!(mol, rng)
                 Dynamics.velocitySampling!(bath, rng)
@@ -203,7 +218,7 @@ function umbrellaSampling(temp::T1, nw::T2, nStep::T2, ks::T1, bound::Vector{T1}
         # println(output, "# ", v0)
         for j in 1:nCollected
             for k in 1:nSkip
-                Dynamics.velocityVelert!(mol, bath, param, forceEval!, cache, ks, x0)
+                Dynamics.velocityVerlet!(mol, bath, param, forceEval!, cache, ks, x0)
             end
             cv[j] = mol.x[1]
             # if j % 25 == 0
@@ -256,9 +271,9 @@ function rate(out::IOStream, fs::AbstractVector{T}, tst::T, beta::T) where T <: 
     return kau
 end
 
-const freqCutoff = 500.0 / au2wn
-const eta = 4.0 * amu2au * freqCutoff
 cd("..")
+# const dipoleCoeff, v0, pesCoeff = getCoefficients(coeffFile="coefficients.jld")
+# const dipoleCoeff, v0, pesCoeff = getCoefficients()
 
 function temperatureDependency()
     cd("tempDep")
@@ -300,11 +315,16 @@ function temperatureDependency()
 end
 
 # temperatureDependency()
-cd("energy")
-using StatProfilerHTML
+cd("chk")
 function testKappa()
-    @time computeKappa(2, 300.0, 1, 10000, 0.16, 0.0048)
-    @time computeKappa(2, 300.0, 1000, 1000, 0.16, 0.0048)
+    if length(ARGS) != 0
+        np = parse(Int64, ARGS[1])
+    else
+        np = 2
+    end
+    chi = 0.01 # / sqrt(np)
+    @time computeKappa(np, 300.0, 1, 1, 0.18, chi)
+    @time computeKappa(np, 300.0, 1000, 3000, 0.18, chi)
 end
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)
