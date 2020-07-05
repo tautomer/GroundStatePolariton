@@ -1,82 +1,8 @@
 module Dynamics
 using Random
-using StaticArrays
 
-export Parameters, ClassicalParticle, ClassicalBathMode, QuantumBathMode, QuantumParticle
-
-abstract type Particles end
-abstract type Bath end
-abstract type Cache end
-abstract type Particles1D <: Particles end
-abstract type ParticlesND <: Particles end
-abstract type Bath1D <: Bath end
-
-struct Parameters
-    temperature::Float64
-    Δt::Float64
-    z::Float64
-    τ::Float64
-    nParticle::Int32
-    nMol::Int32
-    nBath::Int32
-    beadMol::Int16
-    beadPho::Int16
-    beadBath::Int16
-end
-
-mutable struct ClassicalParticle <: Particles1D
-    n::Int32
-    label::Vector{String}
-    m::Vector{Float64}
-    σ::Vector{Float64}
-    x::Vector{Float64}
-    f::Vector{Float64}
-    dtby2m::Vector{Float64}
-    v::Vector{Float64}
-end
-
-mutable struct ClassicalBathMode <: Bath1D
-    n::Int16
-    m::Float64
-    σ::Float64
-    ω::Vector{Float64}
-    c::Vector{Float64}
-    mω2::Vector{Float64}
-    c_mω2::Vector{Float64}
-    x::Vector{Float64}
-    f::Vector{Float64}
-    dtby2m::Float64
-    v::Vector{Float64}
-end
-
-mutable struct QuantumParticle <: ParticlesND
-    label::Vector{String}
-    m::Vector{Float64}
-    x::Array{Float64, 2}
-    v::Array{Float64, 2}
-end
-
-struct Lagevin <: Bath
-    γ::Float64
-    σ::Float64
-    halfΔt2γ::Float64
-    ran::MVector{3, Float64}
-    γdt::Float64
-    dtσ::Float64
-    dt2by2m::Vector{Float64}
-end
-
-mutable struct LagevinCache <: Cache
-    cacheMol1::Vector{Float64}
-    cacheMol2::Vector{Float64}
-    cacheForce::Matrix{Float64}
-end
-
-mutable struct SystemBathCache <: Cache
-    cacheMol1::Vector{Float64}
-    cacheForce::Matrix{Float64}
-    cacheBath::Vector{Float64}
-end
+include("DynamicsConstructors.jl")
+export Parameters, ClassicalParticle, ClassicalBathMode, QuantumParticle
 
 """
     function andersen!(p::ClassicalParticle, b::ClassicalBathMode, cf::T,
@@ -86,7 +12,7 @@ Perform Andersen thermostat for every 1/ν steps. `cf` is the collision frequenc
 Removing COM velocity is currently missing.
 """
 function andersen!(p::ClassicalParticle, b::ClassicalBathMode, cf::T,
-    rng::AbstractRNG, cache::DynamicsCache) where T<:Real
+    rng::AbstractRNG, cache::SystemBathCache) where T<:Real
     Random.rand!(rng, cache.cacheMol1)
     @inbounds @simd for i in eachindex(p.v)
         if cache.cacheMol1[i] < cf
@@ -166,39 +92,39 @@ function velocityVerlet!(p::ClassicalParticle, b::Lagevin, param::Parameters,
     p.v[end] += (fold[end]+p.f[end]) * 2.0
 end
 function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
-    ∇u!::Function, cache::DynamicsCache; cnstr=true)
+    ∇u!::Function; cnstr=true)
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     p.x[1] = 0.0
     @. b.x += b.v * param.Δt
-    force!(p, b, ∇u!, cache)
+    force!(p, b, ∇u!)
     velocityUpdate!(p, b)
 end
 
 function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
-    ∇u!::Function, cache::DynamicsCache)
+    ∇u!::Function)
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
-    force!(p, b, ∇u!, cache)
+    force!(p, b, ∇u!)
     velocityUpdate!(p, b)
 end
 
 function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
-    ∇u!::Function, cache::DynamicsCache, ks::T, x0::T) where T <: AbstractFloat
+    ∇u!::Function, ks::T, x0::T) where T <: AbstractFloat
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
-    force!(p, b, ∇u!, cache, ks, x0)
+    force!(p, b, ∇u!, ks, x0)
     velocityUpdate!(p, b)
 end
 
-function force!(p::Particles1D, b::Bath1D, ∇u!::Function, cache::DynamicsCache)
+function force!(p::Particles1D, b::Bath1D, ∇u!::Function)
 
-    ∇u!(p.f, p.x, cache.cacheForce)
+    ∇u!(p.f, p.x)
     index = 0
     for j in 1:p.n
         @inbounds @simd for i in 1:b.n
@@ -210,10 +136,9 @@ function force!(p::Particles1D, b::Bath1D, ∇u!::Function, cache::DynamicsCache
     end
 end
 
-function force!(p::Particles1D, b::Bath1D, ∇u!::Function, cache::DynamicsCache,
-    ks::T, x0::T) where T <: AbstractFloat
+function force!(p::Particles1D, b::Bath1D, ∇u!::Function, ks::T, x0::T) where T <: AbstractFloat
 
-    ∇u!(p.f, p.x, cache.cacheForce)
+    ∇u!(p.f, p.x)
     p.f[1] -= ks * (p.x[1]-x0)
     index = 0
     for j in 1:p.n
@@ -227,10 +152,10 @@ function force!(p::Particles1D, b::Bath1D, ∇u!::Function, cache::DynamicsCache
 end
 
 function equilibration!(p::Particles1D, b::Bath1D, nst::Int64, rng::AbstractRNG,
-    param::Parameters, ∇u!::Function, cache::DynamicsCache)
+    param::Parameters, ∇u!::Function, cache::SystemBathCache)
 
     @inbounds for j in 1:nst
-        velocityVerlet!(p, b, param, ∇u!, cache, cnstr=true)
+        velocityVerlet!(p, b, param, ∇u!, cnstr=true)
         if j % param.τ == 0
             andersen!(p, b, param.z, rng, cache)
         end

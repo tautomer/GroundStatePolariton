@@ -1,4 +1,3 @@
-using Interpolations: LinearInterpolation, Line, AbstractExtrapolation
 using Constants
 
 # Fourier series fitted parameters
@@ -145,10 +144,10 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Intege
     mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
         x0, similar(mass), param.Δt./(2*mass), similar(mass))
     # obatin the gradient of the corresponding potential
-    forceEvaluation! = constructForce(ωc, couple, nParticle, nMolecule)
+    forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
     # pre-allocated array to avoid allocations for force evaluation
     # cache = Matrix{Float64}(undef, 2, nMolecule)
-    cache = Dynamics.DynamicsCache(zeros(3), similar(mass), similar(mass),
+    cache = Dynamics.SystemBathCache(similar(mass),
         Matrix{Float64}(undef, 2, nMolecule), similar(xb0))
     return param, mol, bath, forceEvaluation!, cache, flnmID
 end
@@ -203,22 +202,28 @@ function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2) where {T1<:
 end
 
 """
-    function getPES(pes="pes.txt"::String, dm="dm.txt"::String)
+    function computeForceComponents(x::T) where T<:Real
 
-Read porential energy surface and dipole moment from text files and then get the
-interpolated functions. The filenames are default to "pes.txt" and "dm.txt".
+Compute -dvdr, μ, and -dμdr in one loop. dvdr and dμdr are negated as they
+appear negative in the force expression. It is done by taking negative values
+of their prefactors.
 """
-function getPES(pes="pes.txt"::String, dm="dm.txt"::String)
-    potentialRaw = readdlm(pes)
-    dipoleRaw = readdlm(dm)
-    function interpolate(x::AbstractVector{T}, y::AbstractVector{T}
-        ) where T <: AbstractFloat
-        # TODO beter way to get the range from an array assumed evenly spaced
-        xrange = LinRange(x[1], x[end], length(x))
-        return LinearInterpolation(xrange, y, extrapolation_bc=Line())
+function computeForceComponents(x::T) where T<:Real
+    dv = 0.0
+    μ = 0.0
+    dμ = 0.0
+    @inbounds @simd for j in eachindex(1:6)
+        ϕ1 = pesCoeff[1, j] * x
+        ϕ2 = dipoleCoeff[1, j] * x + dipoleCoeff[2, j]
+        dv += pesCoeff[3, j] * sin(ϕ1)
+        μ += dipoleCoeff[3, j] * sin(ϕ2)
+        dμ += dipoleCoeff[4, j] * cos(ϕ2)
     end
-    return interpolate(view(potentialRaw, :, 1), view(potentialRaw, :, 2)),
-        interpolate(view(dipoleRaw, :, 1), view(dipoleRaw, :, 2))
+    @inbounds @simd for j in 7:8
+        ϕ1 = pesCoeff[1, j] * x
+        dv += pesCoeff[3, j] * sin(ϕ1)
+    end
+    return dv, μ, dμ
 end
 
 """
@@ -231,12 +236,14 @@ Note that the returned potential is only for calclating force purpose, so it is
 inverted to avoid a "-" at each iteration.
 """
 # TODO RPMD & multi-modes?
-function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) where {T1, T2<:Real}
+function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1, T2<:Real}
     # compute the constants in advances. they can be expensive for many cycles
-    kPho = 0.5 * omegaC^2
+    kPho = 0.5 * ωc^2
     # sqrt(2 / ω_c^3) * χ
     kPho2 = -2kPho
-    sqrt2wcchi = -kPho2 * couple
+    couple = sqrt(2/ωc^3) * χ
+    sqrt2ωχ = -kPho2 * couple
+    χ2byω = 2χ^2 / ωc
     # construct an inverted total potential
     # TODO use 1 float number in this case for better performance
     """
@@ -246,8 +253,8 @@ function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) wh
     Compute force for one single molecule and zero photon.
     Cache is dummy, since I can't get the code disptached for now.
     """
-    @inline function forceOneD!(f::AbstractVector{T}, x::AbstractVector{T},
-        cache::AbstractMatrix{T}) where T<:Real
+    @inline function forceOneD!(f::AbstractVector{T}, x::AbstractVector{T}
+        ) where T<:Real
         f[1] = dvdr(x[1])
     end
 
@@ -258,11 +265,11 @@ function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) wh
     Compute force for one single molecule and one photon.
     Cache is dummy, since I can't get the code disptached for now.
     """
-    @inline function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T},
-        cache::AbstractMatrix{T}) where T<:Real
+    @inline function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T}
+        ) where T<:Real
 
         interaction = (couple * dipole(x[1]) + x[2])
-        f[1] = dvdr(x[1]) + sqrt2wcchi * dμdr(x[1]) * interaction
+        f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
         # println(f[1], " ", dvdr(x[1]), " ", interaction, " ", dμdr(x[1]))
         f[2] = kPho2 * interaction
     end
@@ -294,85 +301,19 @@ function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) wh
     end
     For 100-mol, the ugly way is 1 μs (~10%) faster
     """
-    function forceMultiMol!(f::AbstractVector{T}, x::AbstractVector{T},
-        cache::AbstractMatrix{T}) where T<:Real
+    function forceMultiMol!(f::AbstractVector{T}, x::AbstractVector{T}
+        ) where T<:Real
 
         ∑μ = 0.0
+        q = x[end]
+        tmp = q * sqrt2ωχ
         @inbounds @simd for i in eachindex(1:length(x)-1)
-            xi = x[i]
-            dv = 0.0
-            μ = 0.0
-            dμ = 0.0
-            @inbounds @simd for j in eachindex(1:6)
-                ϕ1 = pesCoeff[1, j] * xi
-                ϕ2 = dipoleCoeff[1, j] * xi + dipoleCoeff[2, j]
-                dv += pesCoeff[3, j] * sin(ϕ1)
-                μ += dipoleCoeff[3, j] * sin(ϕ2)
-                dμ += dipoleCoeff[4, j] * cos(ϕ2)
-            end
-            @inbounds @simd for j in 7:8
-                ϕ1 = pesCoeff[1, j] * xi
-                dv += pesCoeff[3, j] * sin(ϕ1)
-            end
-            cache[1, i] = dv
-            cache[2, i] = dμ # * (-1)^i
-            ∑μ += μ # * (-1)^i
+            dv, μ, dμ = computeForceComponents(x[i])
+            f[i] = dv + (tmp + χ2byω * μ) * dμ
+            ∑μ += μ 
         end
-        interaction = couple * ∑μ + x[end]
-        tmp = interaction * sqrt2wcchi
-        @inbounds @simd for i in eachindex(1:length(x)-1)
-            f[i] = cache[1, i] + tmp * cache[2, i]
-        end
-        f[end] = kPho2 * interaction
+        f[end] = kPho2 * q - sqrt2ωχ * ∑μ
     end
-
-    # function forceMultiMol2!(f::AbstractVector{T}, x::AbstractVector{T},
-    #     cache::AbstractMatrix{T}) where T<:Real
-
-    #     ∑μ = 0.0
-    #     xi = x[1]
-    #     dv = 0.0
-    #     μ = 0.0
-    #     dμ = 0.0
-    #     @inbounds @simd for j in eachindex(1:6)
-    #         ϕ1 = pesCoeff[1, j] * xi
-    #         ϕ2 = dipoleCoeff[1, j] * xi + dipoleCoeff[2, j]
-    #         dv += pesCoeff[3, j] * sin(ϕ1)
-    #         μ += dipoleCoeff[3, j] * sin(ϕ2)
-    #         dμ += dipoleCoeff[4, j] * cos(ϕ2)
-    #     end
-    #     @inbounds @simd for j in 7:8
-    #         ϕ1 = pesCoeff[1, j] * xi
-    #         dv += pesCoeff[3, j] * sin(ϕ1)
-    #     end
-    #     ∑μ += μ
-    #     cache[1, 1] = dv
-    #     cache[2, 1] = dμ 
-    #     xi = x[2]
-    #     dv = 0.0
-    #     μ = 0.0
-    #     dμ = 0.0
-    #     @inbounds @simd for j in eachindex(1:6)
-    #         ϕ1 = pesCoeff[1, j] * xi
-    #         ϕ2 = dipoleCoeff[1, j] * xi + dipoleCoeff[2, j]
-    #         dv += pesCoeff[3, j] * sin(ϕ1)
-    #         μ += dipoleCoeff[3, j] * sin(ϕ2)
-    #         dμ += dipoleCoeff[4, j] * cos(ϕ2)
-    #     end
-    #     @inbounds @simd for j in 7:8
-    #         ϕ1 = pesCoeff[1, j] * xi
-    #         dv += pesCoeff[3, j] * sin(ϕ1)
-    #     end
-    #     ∑μ += μ * sqrtN
-    #     cache[1, 2] = dv
-    #     cache[2, 2] = dμ * sqrtN
-    #     interaction = couple * ∑μ + x[end]
-    #     tmp = interaction * sqrt2wcchi
-    #     @inbounds @simd for i in eachindex(1:length(x)-1)
-    #         f[i] = cache[1, i] + tmp * cache[2, i]
-    #     end
-    #     f[end] = kPho2 * interaction
-    # end
     if nParticle == nMolecule
         # when there is no photon, we force the system to be 1D
         # we will still use an 1-element vector as the input
@@ -387,5 +328,3 @@ function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) wh
         end
     end
 end
-
-const sqrtN = 1

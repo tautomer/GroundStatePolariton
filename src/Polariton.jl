@@ -91,7 +91,7 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
     # t10 = open(flnm10, "w")
     Dynamics.velocitySampling!(mol, rng)
     Dynamics.velocitySampling!(bath, rng)
-    Dynamics.force!(mol, bath, forceEval!, cache)
+    Dynamics.force!(mol, bath, forceEval!)
     Dynamics.equilibration!(mol, bath, 8000, rng, param, forceEval!, cache)
     xm0 = copy(mol.x)
     xb0 = copy(bath.x)
@@ -117,7 +117,7 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
         @inbounds for j in 1:nStep
-            Dynamics.velocityVerlet!(mol, bath, param, forceEval!, cache)
+            Dynamics.velocityVerlet!(mol, bath, param, forceEval!)
             q[j] = mol.x[1]
             # println(output, j, " ", mol.x[1])
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[end])
@@ -152,7 +152,7 @@ function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
     param::Dynamics.Parameters) where T <: AbstractFloat
     fs ./= fs0
     # @. fs /= 100.0
-    flnm = string("fs_", ωc, "_", temp, "_", param.nMol, "_v0.txt")
+    flnm = string("fs_", ωc, "_", temp, "_", param.nMol, "_lf.txt")
     # flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_v0.txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
