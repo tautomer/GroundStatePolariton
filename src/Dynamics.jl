@@ -27,12 +27,14 @@ function andersen!(p::ClassicalParticle, b::ClassicalBathMode, cf::T,
     end
 end
 
-function velocitySampling!(p::ClassicalBathMode, rng::AbstractRNG)
+function velocitySampling!(p::ClassicalParticle, b::ClassicalBathMode, rng::AbstractRNG)
     Random.randn!(rng, p.v)
     p.v .*= p.σ
+    Random.randn!(rng, b.v)
+    b.v .*= b.σ
 end
 
-function velocitySampling!(p::ClassicalParticle, rng::AbstractRNG)
+function velocitySampling!(p::ClassicalParticle, b::Langevin, rng::AbstractRNG)
     Random.randn!(rng, p.v)
     p.v .*= p.σ
 end
@@ -48,49 +50,97 @@ function velocityUpdate!(p::ClassicalParticle, b::Bath1D)
     @. b.v += b.f * b.dtby2m
 end
 
-const invSqrt12 = 0.5 / sqrt(3.0)
+const invSqrt3 = 1.0 / sqrt(3.0)
 # γ = 0.0091126705341906
 # σ = sqrt(2γ/1052.58/1836.0)
+"""
+    function randomForce(prefac::T, r1::T, r2::T) where T<:Float64
+
+Compute the random force in Langevin modified Velocity Verlet. 
+f = σ * Δt^1.5 * (0.5 * r1 + r2 * 0.5 / √3), where `r1` and `r2` are gaussian
+random numbers. The prefactor `prefac` is defined as 0.5 * σ * Δt.
+"""
 function randomForce(prefac::T, r1::T, r2::T) where T<:Float64
-    return prefac * (0.5 * r1 + invSqrt12 * r2)
+    return prefac * (r1 + invSqrt3 * r2)
 end
-function velocityVerlet!(p::ClassicalParticle, lgv::Lagevin, param::Parameters,
+
+"""
+    function positionUpdate(x::T, v::T, f::T, dt::T, lgv::Langevin) where T<:Real
+
+Compute the new corrdinates for all molecules in Langevin modified Velocity Verlet. 
+"""
+function positionUpdate(x::T, v::T, f::T, dt::T, lgv::Langevin) where T<:Real
+    acc = lgv.dt2by2m[1] * f - lgv.halfΔt2γ * v + randomForce(lgv.dtσ,
+        lgv.ran[1], lgv.ran[2])
+    x += v * dt + acc
+    return acc, x
+end
+
+"""
+
+Compute the new corrdinates for all molecules in Langevin modified Velocity Verlet. 
+"""
+function velocityUpdate(v::T, f::T, fOld::T, dtby2m::T, acc::T, lgv::Langevin
+    ) where T<:Real
+    accLgv = lgv.σ * lgv.ran[3] - lgv.γ * acc - lgv.dtγ * v 
+    v += (fOld+f) * dtby2m + accLgv
+    return v
+end
+
+function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
     rng::AbstractRNG, ∇u!::Function, cache::T, ::Val{:cnstr}) where T<:Cache
 
+    # obatin all three random numbers at once
     Random.randn!(rng, lgv.ran)
+    # copy current forces to cache
     copy!(cache.cacheMol1, p.f)
-    for i in eachindex(1:p.n)
-        cache.cacheMol2[i] = lgv.dt2by2m[i] * p.f[i] - lgv.halfΔt2γ * p.v[i] +
-            randomForce(lgv.dtσ, lgv.ran[1], lgv.ran[2])
-        p.x[i] += p.v[i] * param.Δt + acc[i]
-    end
+    # apply the constraint
     p.x[1] = 0.0
-    p.x[end] += p.v[end] * param.Δt + p.f[end] * 8.0
-    force!(p, b, ∇u!, cache)
+    # update the position for each molecule
     for i in eachindex(1:p.n)
-        p.v[i] += (fold[i]+p.f[i]) * p.dtby2m[i] - 4.0 * γ * p.v[i] + 2.0 * σ * Random.randn() - γ * acc[i]
+        cache.cacheMol2[i], p.x[i] = positionUpdate(p.x[i], p.v[i], p.f[i],
+            param.Δt, lgv)
     end
-    p.v[end] += (fold[end]+p.f[end]) * 2.0
+    # update the position for the photon
+    p.x[end] += p.v[end] * param.Δt + p.f[end] * lgv.dt2by2m[end]
+    # compute new forces
+    ∇u!(p.f, p.x)
+    # update the velocity for each molecule
+    for i in eachindex(1:p.n)
+        p.v[i] = velocityUpdate(p.v[i], p.f[i], cache.cacheMol1[i],
+            p.dtby2m[i], cache.cacheMol2[i], lgv)
+    end
+    # apply the constraint
+    p.v[1] = 0.0
+    # update the velocity for the photon
+    p.v[end] += (cache.cacheMol1[end]+p.f[end]) * p.dtby2m[end]
 end
 
-function velocityVerlet!(p::ClassicalParticle, b::Lagevin, param::Parameters,
+function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
     rng::AbstractRNG, ∇u!::Function, cache::T) where T<:Cache
-    γ = 0.0091126705341906
-    σ = sqrt(2γ/1052.58/1836.0)
-    r1 = 0.5Random.randn()
-    r2 = 0.28867513459481288225457439025098Random.randn()
-    copy!(fold, p.f)
+
+    # obatin all three random numbers at once
+    Random.randn!(rng, lgv.ran)
+    # copy current forces to cache
+    copy!(cache.cacheMol1, p.f)
+    # update the position for each molecule
     for i in eachindex(1:p.n)
-        acc[i] = param.Δt^2 / 2.0 / 1836.0 * p.f[i] - 8.0 * γ * p.v[i] + 8.0 * σ * (r1+r2)
-        p.x[i] += p.v[i] * param.Δt + acc[i]
+        cache.cacheMol2[i], p.x[i] = positionUpdate(p.x[i], p.v[i], p.f[i],
+            param.Δt, lgv)
     end
-    p.x[end] += p.v[end] * param.Δt + p.f[end] * 8.0
-    force!(p, b, ∇u!, cache)
+    # update the position for the photon
+    p.x[end] += p.v[end] * param.Δt + p.f[end] * lgv.dt2by2m[end]
+    # compute new forces
+    ∇u!(p.f, p.x)
+    # update the velocity for each molecule
     for i in eachindex(1:p.n)
-        p.v[i] += (fold[i]+p.f[i]) * p.dtby2m[i] - 4.0 * γ * p.v[i] + 2.0 * σ * Random.randn() - γ * acc[i]
+        p.v[i] = velocityUpdate(p.v[i], p.f[i], cache.cacheMol1[i],
+            p.dtby2m[i], cache.cacheMol2[i], lgv)
     end
-    p.v[end] += (fold[end]+p.f[end]) * 2.0
+    # update the velocity for the photon
+    p.v[end] += (cache.cacheMol1[end]+p.f[end]) * p.dtby2m[end]
 end
+
 function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
     ∇u!::Function; cnstr=true)
 
@@ -151,6 +201,18 @@ function force!(p::Particles1D, b::Bath1D, ∇u!::Function, ks::T, x0::T) where 
     end
 end
 
+function force!(p::Particles1D, b::Langevin, ∇u!::Function)
+
+    ∇u!(p.f, p.x)
+end
+"""
+    function equilibration!(p::Particles1D, b::Bath1D, nst::Int64, rng::AbstractRNG,
+        param::Parameters, ∇u!::Function, cache::SystemBathCache)
+
+Equilibrate the particles in a system-bath model. We use an Andersen thermostat
+to maintain a NVE ensemble. The first molecule is constrained on the top of the
+barrier.
+"""
 function equilibration!(p::Particles1D, b::Bath1D, nst::Int64, rng::AbstractRNG,
     param::Parameters, ∇u!::Function, cache::SystemBathCache)
 
@@ -159,6 +221,21 @@ function equilibration!(p::Particles1D, b::Bath1D, nst::Int64, rng::AbstractRNG,
         if j % param.τ == 0
             andersen!(p, b, param.z, rng, cache)
         end
+    end
+end
+
+"""
+    function equilibration!(p::Particles1D, b::Langevin, nst::Int64, rng::AbstractRNG,
+        param::Parameters, ∇u!::Function, cache::SystemBathCache)
+
+Equilibrate the particles with Langevin dynamics. The first molecule is
+constrained on the top of the barrier.
+"""
+function equilibration!(p::Particles1D, b::Langevin, nst::Int64, rng::AbstractRNG,
+    param::Parameters, ∇u!::Function, cache::LangevinCache)
+
+    @inbounds for j in 1:nst
+        velocityVerlet!(p, b, param, rng, ∇u!, cache, Val(:cnstr))
     end
 end
 

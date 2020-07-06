@@ -17,6 +17,7 @@ const xeq = -1.735918600503033
 const mueq = -1.2197912355997298
 const freqCutoff = 500.0 / au2wn
 const eta = 4.0 * amu2au * freqCutoff
+const gamma = eta / amu2au / 5.0
 
 """
     function dipole(x::T) where T<:Real
@@ -89,7 +90,8 @@ end
 Initialize most of the values, parameters and structs for the dynamics.
 """
 # TODO better and more flexible way to handle input values
-function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Integer, T2<:Real}
+function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
+    model::Symbol=:langevin) where {T1<:Integer, T2<:Real}
 
     nPhoton = 1
     nMolecule = nParticle - nPhoton
@@ -101,11 +103,11 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Intege
     # collisionFrequency 
     z = ν * dt
 
-    # compute coefficients for bath modes
-    ω, mω2, c, c_mω2 = computeBathParameters(nBath)
-
     # check if the number of molecules and photons make sense
-    nParticle, nMolecule, label, mass = checkParticleNumbers(nParticle, nMolecule, chi)
+    nParticle, nMolecule, label, mass = checkParticleNumbers(nParticle,
+        nMolecule, chi)
+    # total number of bath modes
+    nBathTotal = nMolecule * nBath
 
     # the suffix for all output file names to identify the setup and avoid overwritting
     flnmID = string(ωc, "_", chi, "_", temp, "_", nMolecule, ".txt")
@@ -118,40 +120,67 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Intege
     # array to store equilibrated molecule and photon coordinates for the next trajectory
     x0 = repeat([xeq], nParticle)
     x0[1] = 0.0
-    # x0[end] = couple * mueq * nMolecule
     if nMolecule > 1
         x0[end] = couple * mueq * (nMolecule-1)
     else
         x0[end] = 0.0
     end
-    # total number of bath modes
-    nBathTotal = nMolecule * nBath
-    # array to store equilibrated bath coordinates for the next trajectory
-    xb0 = Vector{Float64}(undef, nBathTotal)
-    index = 0
-    for i in eachindex(1:nMolecule)
-        @inbounds @simd for j in eachindex(1:nBath)
-            index += 1
-            xb0[index] = x0[i] * c_mω2[j]
+    
+    if model == :SystemBath
+        # compute coefficients for bath modes
+        ω, mω2, c, c_mω2 = computeBathParameters(nBath)
+        # array to store equilibrated bath coordinates for the next trajectory
+        xb0 = Vector{Float64}(undef, nBathTotal)
+        # assgin the equilibrium positions as the initial positions of bath
+        index = 0
+        for i in eachindex(1:nMolecule)
+            @inbounds @simd for j in eachindex(1:nBath)
+                index += 1
+                xb0[index] = x0[i] * c_mω2[j]
+            end
         end
+        bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
+            ω, c, mω2, c_mω2, xb0, similar(xb0), dt/(2*amu2au), similar(xb0))
+        # pre-allocated array to avoid allocations for force evaluation
+        cache = Dynamics.SystemBathCache(similar(mass), similar(xb0))
+    else
+        # for Langevin dynamics
+        # sigma for the random force. Note dt is included
+        σ = sqrt(2gamma * temp * dt / amu2au)
+        # temporary variable for 0.5 * dt^2
+        halfΔt2 = 0.5 * dt^2
+        # 0.5 * dt^2 * gamma for position update
+        halfΔt2γ = halfΔt2 * gamma
+        # dt * gamma for velocity update
+        dtγ = dt * gamma
+        # 0.5 * dt * sigma for the random force in position update
+        dtσ = 0.5 * dt * σ
+        # 0.5 * dt^2 / m for position update
+        dt2by2m = halfΔt2 ./ mass
+        # call it bath to keep it consistent with the name of the system-bath struct
+        # last two fields are dummy, just to keep the main function functioning
+        # as saving bath coordinates is necessary for system-bath model
+        # TODO properly split system-bath model and langevin dynamics. A disptach might be necessary.
+        bath = Dynamics.Langevin(gamma, σ, halfΔt2γ, zeros(3), dtγ, dtσ,
+            dt2by2m, [1.0], [1.0])
+        cache = Dynamics.LangevinCache(similar(mass), similar(mass))
     end
 
     param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
         nBathTotal, 1, 1, 1)
-    bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
-        ω, c, mω2, c_mω2, xb0, similar(xb0), param.Δt/(2*amu2au),
-        similar(xb0))
     mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
         x0, similar(mass), param.Δt./(2*mass), similar(mass))
     # obatin the gradient of the corresponding potential
     forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
-    # pre-allocated array to avoid allocations for force evaluation
-    # cache = Matrix{Float64}(undef, 2, nMolecule)
-    cache = Dynamics.SystemBathCache(similar(mass),
-        Matrix{Float64}(undef, 2, nMolecule), similar(xb0))
     return param, mol, bath, forceEvaluation!, cache, flnmID
 end
 
+"""
+    function computeBathParameters(nBath::T) where T<:Integer
+
+Compute bath parameters including coupling strength `cᵢ`, frequencies `ωᵢ` and
+`mωᵢ^2` and `cᵢ/mωᵢ^2`. They will be used to compute forces.
+"""
 function computeBathParameters(nBath::T) where T<:Integer
     nb = convert(Float64, nBath)
     ω = Vector{Float64}(undef, nBath)
@@ -170,6 +199,10 @@ function computeBathParameters(nBath::T) where T<:Integer
         c_mω2[i] = c[i] / mω2[i]
     end
     return ω, mω2, c, c_mω2 
+end
+
+function buildBath()
+    
 end
 
 """
@@ -265,7 +298,7 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
     Compute force for one single molecule and one photon.
     Cache is dummy, since I can't get the code disptached for now.
     """
-    @inline function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T}
+    function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T}
         ) where T<:Real
 
         interaction = (couple * dipole(x[1]) + x[2])
@@ -287,19 +320,6 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
         cache::AbstractMatrix{T}) where T<:Real
 
     The ugly but faster way of implementing multi-molecule force evaluation.
-    A tidier way of coding is like below
-    function ∇u!(f::AbstractVector{T}, x::AbstractVector{T}) where {T<:Real}
-        ∑μ = 0.0
-        @inbounds @simd for i in eachindex(1:length(x)-1)
-            ∑μ += dipole2(x[i])
-        end
-        interaction = (couple * ∑μ + x[end])
-        @inbounds @simd for i in eachindex(1:length(x)-1)
-            f[i] = dvdr(x[i]) + sqrt2wcchi * dμdr(x[i]) * interaction
-        end
-        f[end] = kPho2 * interaction
-    end
-    For 100-mol, the ugly way is 1 μs (~10%) faster
     """
     function forceMultiMol!(f::AbstractVector{T}, x::AbstractVector{T}
         ) where T<:Real
@@ -309,7 +329,8 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
         tmp = q * sqrt2ωχ
         @inbounds @simd for i in eachindex(1:length(x)-1)
             dv, μ, dμ = computeForceComponents(x[i])
-            f[i] = dv + (tmp + χ2byω * μ) * dμ
+            # f[i] = dv + (tmp + χ2byω * μ) * dμ
+            f[i] = dv + tmp * dμ
             ∑μ += μ 
         end
         f[end] = kPho2 * q - sqrt2ωχ * ∑μ

@@ -4,9 +4,9 @@ module Auxiliary
 """
 
 using Constants
-using Calculus
 using IntervalArithmetic, IntervalRootFinding
 
+# FIXME: switch to packages like FiniteDiff or ForwardDiff
 """
     normalModeAnalysis(x0::Array{Float64,1})
 
@@ -74,9 +74,9 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
 
     rng = Random.seed!(1233+Threads.threadid())
     param, mol, bath, forceEval!, cache, flnmID = initialize(nParticle, temp,
-        ωc, chi)
+        ωc, chi, model=:langevin)
 
-    dir = string(param.nMol)
+    # dir = string(param.nMol)
     # if ! isdir(dir)
     #     mkdir(dir)
     # end
@@ -89,10 +89,9 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
     # flnm10 = string("t10_", param.nMol, ".txt")
     # t0 = open(flnm0, "w")
     # t10 = open(flnm10, "w")
-    Dynamics.velocitySampling!(mol, rng)
-    Dynamics.velocitySampling!(bath, rng)
+    Dynamics.velocitySampling!(mol, bath, rng)
     Dynamics.force!(mol, bath, forceEval!)
-    Dynamics.equilibration!(mol, bath, 8000, rng, param, forceEval!, cache)
+    # Dynamics.equilibration!(mol, bath, 8000, rng, param, forceEval!, cache)
     xm0 = copy(mol.x)
     xb0 = copy(bath.x)
     vm0 = copy(mol.v)
@@ -104,20 +103,20 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
         copy!(bath.x, xb0)
         copy!(mol.v, vm0)
         copy!(bath.v, vb0)
-        Dynamics.equilibration!(mol, bath, 1000, rng, param, forceEval!, cache)
+        # Dynamics.equilibration!(mol, bath, 1000, rng, param, forceEval!, cache)
         copy!(xm0, mol.x)
         copy!(xb0, bath.x)
         copy!(vm0, mol.v)
         copy!(vb0, bath.v)
-        Dynamics.velocitySampling!(mol, rng)
-        Dynamics.velocitySampling!(bath, rng)
+        Dynamics.velocitySampling!(mol, bath, rng)
         v0 = mol.v[1] 
         # println(t0, v0)
         # e[1] += reactiveEnergy(mol)
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
         @inbounds for j in 1:nStep
-            Dynamics.velocityVerlet!(mol, bath, param, forceEval!)
+            Dynamics.velocityVerlet!(mol, bath, param, rng, forceEval!, cache)
+            # Dynamics.velocityVerlet!(mol, bath, param, forceEval!)
             q[j] = mol.x[1]
             # println(output, j, " ", mol.x[1])
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[end])
@@ -152,7 +151,7 @@ function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
     param::Dynamics.Parameters) where T <: AbstractFloat
     fs ./= fs0
     # @. fs /= 100.0
-    flnm = string("fs_", ωc, "_", temp, "_", param.nMol, "_lf.txt")
+    flnm = string("fs_", ωc, "_", temp, "_", param.nMol, "_lgv.txt")
     # flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_v0.txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
@@ -316,15 +315,17 @@ end
 
 # temperatureDependency()
 cd("chk")
+using Profile
 function testKappa()
     if length(ARGS) != 0
         np = parse(Int64, ARGS[1])
     else
         np = 2
     end
-    chi = 0.01 # / sqrt(np)
+    chi = 0.01 / sqrt(np)
     @time computeKappa(np, 300.0, 1, 1, 0.18, chi)
-    @time computeKappa(np, 300.0, 1000, 3000, 0.18, chi)
+    Profile.clear_malloc_data()
+    @time computeKappa(np, 300.0, 100, 1000, 0.18, chi)
 end
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)

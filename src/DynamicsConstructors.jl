@@ -52,24 +52,24 @@ mutable struct QuantumParticle <: ParticlesND
     v::Array{Float64, 2}
 end
 
-struct Lagevin <: Bath
+mutable struct Langevin <: Bath
     γ::Float64
     σ::Float64
     halfΔt2γ::Float64
     ran::MVector{3, Float64}
-    γdt::Float64
+    dtγ::Float64
     dtσ::Float64
     dt2by2m::Vector{Float64}
+    x::Vector{Float64}
+    v::Vector{Float64}
 end
 
-mutable struct LagevinCache <: Cache
+mutable struct LangevinCache <: Cache
     cacheMol1::Vector{Float64}
     cacheMol2::Vector{Float64}
-    cacheForce::Matrix{Float64}
 end
 
 mutable struct SystemBathCache <: Cache
     cacheMol1::Vector{Float64}
-    cacheForce::Matrix{Float64}
     cacheBath::Vector{Float64}
 end
