@@ -97,16 +97,16 @@ function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
     # apply the constraint
     p.x[1] = 0.0
     # update the position for each molecule
-    for i in eachindex(1:p.n)
+    @inbounds @simd for i in eachindex(1:p.n)
         cache.cacheMol2[i], p.x[i] = positionUpdate(p.x[i], p.v[i], p.f[i],
             param.Δt, lgv)
     end
     # update the position for the photon
     p.x[end] += p.v[end] * param.Δt + p.f[end] * lgv.dt2by2m[end]
     # compute new forces
-    ∇u!(p.f, p.x)
+    ∇u!(p.f, p.x, p.cosθ)
     # update the velocity for each molecule
-    for i in eachindex(1:p.n)
+    @inbounds @simd for i in eachindex(1:p.n)
         p.v[i] = velocityUpdate(p.v[i], p.f[i], cache.cacheMol1[i],
             p.dtby2m[i], cache.cacheMol2[i], lgv)
     end
@@ -123,22 +123,22 @@ function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
     Random.randn!(rng, lgv.ran)
     # copy current forces to cache
     copy!(cache.cacheMol1, p.f)
-    # update the position for each molecule
-    for i in eachindex(1:p.n)
-        cache.cacheMol2[i], p.x[i] = positionUpdate(p.x[i], p.v[i], p.f[i],
-            param.Δt, lgv)
+    # update the position for the first molecule
+    cache.cacheMol2[1], p.x[1] = positionUpdate(p.x[1], p.v[1], p.f[1],
+        param.Δt, lgv)
+    # update the position for the rest DOF
+    @inbounds @simd for i in 2:param.nParticle
+        p.x[i] += p.v[i] * param.Δt + p.f[i] * lgv.dt2by2m[i]
     end
-    # update the position for the photon
-    p.x[end] += p.v[end] * param.Δt + p.f[end] * lgv.dt2by2m[end]
     # compute new forces
-    ∇u!(p.f, p.x)
+    ∇u!(p.f, p.x, p.cosθ)
     # update the velocity for each molecule
-    for i in eachindex(1:p.n)
-        p.v[i] = velocityUpdate(p.v[i], p.f[i], cache.cacheMol1[i],
-            p.dtby2m[i], cache.cacheMol2[i], lgv)
-    end
+    p.v[1] = velocityUpdate(p.v[1], p.f[1], cache.cacheMol1[1],
+        p.dtby2m[1], cache.cacheMol2[1], lgv)
     # update the velocity for the photon
-    p.v[end] += (cache.cacheMol1[end]+p.f[end]) * p.dtby2m[end]
+    @inbounds @simd for i in 2:param.nParticle
+        p.v[i] += (cache.cacheMol1[i]+p.f[i]) * p.dtby2m[i]
+    end
 end
 
 function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,

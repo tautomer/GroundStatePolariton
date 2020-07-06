@@ -29,6 +29,7 @@ mutable struct ClassicalParticle <: Particles1D
     f::Vector{Float64}
     dtby2m::Vector{Float64}
     v::Vector{Float64}
+    cosθ::Vector{Float64}
 end
 
 mutable struct ClassicalBathMode <: Bath1D

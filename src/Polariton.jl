@@ -72,8 +72,7 @@ const corr = CorrelationFunctions
 function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
     chi::T1) where {T1<:Real, T2<:Integer}
 
-    rng = Random.seed!(1233+Threads.threadid())
-    param, mol, bath, forceEval!, cache, flnmID = initialize(nParticle, temp,
+    rng, param, mol, bath, forceEval!, cache, flnmID = initialize(nParticle, temp,
         ωc, chi, model=:langevin)
 
     # dir = string(param.nMol)
@@ -91,7 +90,7 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
     # t10 = open(flnm10, "w")
     Dynamics.velocitySampling!(mol, bath, rng)
     Dynamics.force!(mol, bath, forceEval!)
-    # Dynamics.equilibration!(mol, bath, 8000, rng, param, forceEval!, cache)
+    Dynamics.equilibration!(mol, bath, 8000, rng, param, forceEval!, cache)
     xm0 = copy(mol.x)
     xb0 = copy(bath.x)
     vm0 = copy(mol.v)
@@ -103,7 +102,7 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
         copy!(bath.x, xb0)
         copy!(mol.v, vm0)
         copy!(bath.v, vb0)
-        # Dynamics.equilibration!(mol, bath, 1000, rng, param, forceEval!, cache)
+        Dynamics.equilibration!(mol, bath, 1000, rng, param, forceEval!, cache)
         copy!(xm0, mol.x)
         copy!(xb0, bath.x)
         copy!(vm0, mol.v)
@@ -151,7 +150,7 @@ function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
     param::Dynamics.Parameters) where T <: AbstractFloat
     fs ./= fs0
     # @. fs /= 100.0
-    flnm = string("fs_", ωc, "_", temp, "_", param.nMol, "_lgv.txt")
+    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, ".txt")
     # flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_v0.txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
@@ -314,7 +313,7 @@ function temperatureDependency()
 end
 
 # temperatureDependency()
-cd("chk")
+cd("mols")
 using Profile
 function testKappa()
     if length(ARGS) != 0
@@ -322,10 +321,10 @@ function testKappa()
     else
         np = 2
     end
-    chi = 0.01 / sqrt(np)
+    chi = 0.0054 # / sqrt(np)
     @time computeKappa(np, 300.0, 1, 1, 0.18, chi)
     Profile.clear_malloc_data()
-    @time computeKappa(np, 300.0, 100, 1000, 0.18, chi)
+    @time computeKappa(np, 300.0, 1000, 3000, 0.18, chi)
 end
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)

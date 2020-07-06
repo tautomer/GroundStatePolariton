@@ -165,14 +165,16 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
             dt2by2m, [1.0], [1.0])
         cache = Dynamics.LangevinCache(similar(mass), similar(mass))
     end
-
+    # angles for the dipole moment
+    rng = Random.seed!(1233+Threads.threadid())
+    angle = cos.(Random.rand(rng, nMolecule) .* 2pi) 
     param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
         nBathTotal, 1, 1, 1)
     mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
-        x0, similar(mass), param.Δt./(2*mass), similar(mass))
+        x0, similar(mass), param.Δt./(2*mass), similar(mass), angle)
     # obatin the gradient of the corresponding potential
     forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
-    return param, mol, bath, forceEvaluation!, cache, flnmID
+    return rng, param, mol, bath, forceEvaluation!, cache, flnmID
 end
 
 """
@@ -321,8 +323,24 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
 
     The ugly but faster way of implementing multi-molecule force evaluation.
     """
-    function forceMultiMol!(f::AbstractVector{T}, x::AbstractVector{T}
-        ) where T<:Real
+    function forceMultiMol!(f::T, x::T, angle::T) where T<:AbstractVector{T1
+        } where T1<:Real
+
+        ∑μ = 0.0
+        q = x[end]
+        tmp = q * sqrt2ωχ
+        @inbounds @simd for i in eachindex(1:length(x)-1)
+            cosθ = angle[i]
+            dv, μ, dμ = computeForceComponents(x[i])
+            # f[i] = dv + (tmp + χ2byω * μ) * dμ
+            f[i] = dv + tmp * dμ * cosθ
+            ∑μ += μ * cosθ
+        end
+        f[end] = kPho2 * q - sqrt2ωχ * ∑μ
+    end
+
+    function forceMultiMol!(f::T, x::T,
+        ) where T<:AbstractVector{T1} where T1<:Real
 
         ∑μ = 0.0
         q = x[end]
