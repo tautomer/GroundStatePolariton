@@ -57,7 +57,6 @@ mutable struct Langevin <: Bath
     γ::Float64
     σ::Float64
     halfΔt2γ::Float64
-    ran::MVector{3, Float64}
     dtγ::Float64
     dtσ::Float64
     dt2by2m::Vector{Float64}
@@ -66,6 +65,8 @@ mutable struct Langevin <: Bath
 end
 
 mutable struct LangevinCache <: Cache
+    ran1::Vector{Float64}
+    ran2::Vector{Float64}
     cacheMol1::Vector{Float64}
     cacheMol2::Vector{Float64}
 end

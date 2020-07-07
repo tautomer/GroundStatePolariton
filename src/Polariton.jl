@@ -102,6 +102,7 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
         copy!(bath.x, xb0)
         copy!(mol.v, vm0)
         copy!(bath.v, vb0)
+        getRandomAngles!(mol.cosθ, rng)
         Dynamics.equilibration!(mol, bath, 1000, rng, param, forceEval!, cache)
         copy!(xm0, mol.x)
         copy!(xb0, bath.x)
@@ -150,7 +151,7 @@ function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
     param::Dynamics.Parameters) where T <: AbstractFloat
     fs ./= fs0
     # @. fs /= 100.0
-    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, ".txt")
+    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_newlgv.txt")
     # flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_v0.txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
@@ -313,7 +314,7 @@ function temperatureDependency()
 end
 
 # temperatureDependency()
-cd("mols")
+cd("chk")
 using Profile
 function testKappa()
     if length(ARGS) != 0

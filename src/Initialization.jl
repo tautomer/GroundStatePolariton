@@ -1,4 +1,5 @@
 using Constants
+using Random
 
 # Fourier series fitted parameters
 # dipole
@@ -117,32 +118,21 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
     temp /= au2kelvin
     couple = sqrt(2/ωc^3) * chi
 
+    rng = Random.seed!(1233+Threads.threadid())
+    angles = similar(mass)
+    getRandomAngles!(angles, rng)
+    sumCosθ = sum(angles)
     # array to store equilibrated molecule and photon coordinates for the next trajectory
     x0 = repeat([xeq], nParticle)
     x0[1] = 0.0
     if nMolecule > 1
-        x0[end] = couple * mueq * (nMolecule-1)
+        x0[end] = couple * mueq * (nMolecule-1) * sumCosθ
     else
         x0[end] = 0.0
     end
     
     if model == :SystemBath
-        # compute coefficients for bath modes
-        ω, mω2, c, c_mω2 = computeBathParameters(nBath)
-        # array to store equilibrated bath coordinates for the next trajectory
-        xb0 = Vector{Float64}(undef, nBathTotal)
-        # assgin the equilibrium positions as the initial positions of bath
-        index = 0
-        for i in eachindex(1:nMolecule)
-            @inbounds @simd for j in eachindex(1:nBath)
-                index += 1
-                xb0[index] = x0[i] * c_mω2[j]
-            end
-        end
-        bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
-            ω, c, mω2, c_mω2, xb0, similar(xb0), dt/(2*amu2au), similar(xb0))
-        # pre-allocated array to avoid allocations for force evaluation
-        cache = Dynamics.SystemBathCache(similar(mass), similar(xb0))
+        bath, cache = buildBath(nBath, nMolecule, temp, dt)
     else
         # for Langevin dynamics
         # sigma for the random force. Note dt is included
@@ -161,17 +151,17 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
         # last two fields are dummy, just to keep the main function functioning
         # as saving bath coordinates is necessary for system-bath model
         # TODO properly split system-bath model and langevin dynamics. A disptach might be necessary.
-        bath = Dynamics.Langevin(gamma, σ, halfΔt2γ, zeros(3), dtγ, dtσ,
-            dt2by2m, [1.0], [1.0])
-        cache = Dynamics.LangevinCache(similar(mass), similar(mass))
+        bath = Dynamics.Langevin(gamma, σ, halfΔt2γ, dtγ, dtσ, dt2by2m, [1.0],
+            [1.0])
+        cache = Dynamics.LangevinCache(Vector{Float64}(undef, 3),
+            Vector{Float64}(undef, 3*(nMolecule-1)),similar(mass),
+            similar(mass))
     end
     # angles for the dipole moment
-    rng = Random.seed!(1233+Threads.threadid())
-    angle = cos.(Random.rand(rng, nMolecule) .* 2pi) 
     param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
         nBathTotal, 1, 1, 1)
     mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
-        x0, similar(mass), param.Δt./(2*mass), similar(mass), angle)
+        x0, similar(mass), param.Δt./(2*mass), similar(mass), angles)
     # obatin the gradient of the corresponding potential
     forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
     return rng, param, mol, bath, forceEvaluation!, cache, flnmID
@@ -203,8 +193,31 @@ function computeBathParameters(nBath::T) where T<:Integer
     return ω, mω2, c, c_mω2 
 end
 
-function buildBath()
-    
+function buildBath(nBath::T1, nMolecule::T1, temp::T2, dt::T2) where {
+    T1<:Integer, T2<:Real}
+    # compute coefficients for bath modes
+    ω, mω2, c, c_mω2 = computeBathParameters(nBath)
+    # array to store equilibrated bath coordinates for the next trajectory
+    xb0 = Vector{Float64}(undef, nMolecule * nBath)
+    # assgin the equilibrium positions as the initial positions of bath
+    index = 0
+    for i in eachindex(1:nMolecule)
+        @inbounds @simd for j in eachindex(1:nBath)
+            index += 1
+            xb0[index] = x0[i] * c_mω2[j]
+        end
+    end
+    bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
+        ω, c, mω2, c_mω2, xb0, similar(xb0), dt/(2*amu2au), similar(xb0))
+    # pre-allocated array to avoid allocations for force evaluation
+    cache = Dynamics.SystemBathCache(Vector{Float64}(undef, nMolecule),
+        similar(xb0))
+    return bath, cache
+end
+
+function getRandomAngles!(angles::AbstractVector{Float64}, rng::AbstractRNG)
+    Random.rand!(rng, angles)
+    @. angles = cos(angles * 2pi)
 end
 
 """
@@ -305,7 +318,14 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
 
         interaction = (couple * dipole(x[1]) + x[2])
         f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
-        # println(f[1], " ", dvdr(x[1]), " ", interaction, " ", dμdr(x[1]))
+        f[2] = kPho2 * interaction
+    end
+    # TODO: properly handle whith angles and without angles
+    function forceSingleMol!(f::T, x::T, angle::T) where T<:AbstractVector{T1
+        } where T1<:Real
+
+        interaction = (couple * dipole(x[1]) + x[2])
+        f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
         f[2] = kPho2 * interaction
     end
 
@@ -339,8 +359,7 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
         f[end] = kPho2 * q - sqrt2ωχ * ∑μ
     end
 
-    function forceMultiMol!(f::T, x::T,
-        ) where T<:AbstractVector{T1} where T1<:Real
+    function forceMultiMol!(f::T, x::T) where T<:AbstractVector{T1} where T1<:Real
 
         ∑μ = 0.0
         q = x[end]
