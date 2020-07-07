@@ -134,18 +134,17 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
     # open("check_energy.txt", "w") do io
     #     writedlm(io, e)
     # end
+    corr.normalize!(fs, fs0)
 
-    return printKappa(fs, fs0, ωc, chi, temp, param)
+    return printKappa(fs, ωc, chi, temp, param)
 end
 
 function reactiveEnergy(p::Dynamics.ClassicalParticle)
     return pes(p.x[1]) + 918.0 * p.v[1]^2
 end
 
-function printKappa(fs::AbstractVector{T}, fs0::T, ωc::T, chi::T, temp::T,
+function printKappa(fs::AbstractVector{T}, ωc::T, chi::T, temp::T,
     param::Dynamics.Parameters) where T <: AbstractFloat
-    fs ./= fs0
-    # @. fs /= 100.0
     flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_fixed_angle.txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
