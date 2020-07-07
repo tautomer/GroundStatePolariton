@@ -333,65 +333,15 @@ function testPMF()
     @time umbrellaSampling(300.0, 100, 10000000, 0.15, [-3.5, 3.5], 0.16, 0.0)
 end
 testKappa()
-# param, label, mass, bath = initialize(temp, freqCutoff, eta)
-# using Calculus: second_derivative
-# using Optim, LineSearches
-# 
-# println(sqrt(-second_derivative(x -> pesMol(x), 0.0)/amu2au)*au2wn)
-# result = optimize(x -> pesMol(x[1]), [-4.0], BFGS())
-# x = Optim.minimizer(result)
-# println(sqrt(second_derivative(x -> pesMol(x), x[1])/amu2au)*au2wn)
-# 
-# result = optimize(x -> pesMol(x[1]), [-1.0], BFGS())
-# println(Optim.minimizer(result))
-
 # chi = [0.0, 0.0002, 0.002, 0.02]
 # omegac = collect(0.04:0.04:0.2)
-# iter = vec([(i,j) for i in omegac, j in chi])
-# run(1, omegac[1], chi[1])
-# 
 # chi = collect(0.001:0.001:0.019)
 # chi = vcat(chi, collect(0.04:0.02:0.2))
 # omegac = [0.2]
-# iter = vcat(iter, vec([(i,j) for i in omegac, j in chi]))
-# 
 # chi = [0.02]
 # omegac = collect(0.2:0.2:1.0)
-# iter = vcat(iter, vec([(i,j) for i in omegac, j in chi]))
-# @time Threads.@threads for i in iter 
-#     run(nTraj, i[1], i[2]) 
-# end
-
-#  for i in [500]
-#      temp = i / au2kelvin
-#      @time kappa(temp, 1, 0.2, 0.2)
-#      @time kappa(temp, 5000, 0.2, 0.2)
-#  end
-
 # chi = [0.2]
 # omegac = vcat([0.001, 0.005, 0.01], collect(0.04:0.04:0.2), collect(0.4:0.2:1.0), collect(1.0:1.0:4.0))
 # omegac = collect(1.0:3.0)
-# iter = [(i,0.1i^1.5) for i in omegac]
-# iter = [(i,0.05i) for i in omegac]
-# iter = [(0.16,0.0064), (0.36,0.0216)]
-# iter = vec([(i,j) for i in omegac, j in chi])
-# @time Threads.@threads for i in iter 
-#     flnm = string("fs_", i[1], "_", i[2], ".txt")
-#     if isfile(flnm)
-#         println(flnm, " already exists")
-#         continue
-#     end
-#     kappa(temp, 5000, i[1], i[2]) 
-# end
 # chi = 0.02
 # wc = vcat([0.001, 0.005, 0.01, 0.05, 0.1], collect(0.11:0.01:0.2), collect(0.3:0.1:0.9), collect(1.0:10.0))
-# 
-# using Printf
-# for i in wc
-#     i /= au2ev
-#     uTotal = constructPotential(pesMol, dipole, i, chi)
-#     minLoc, minVal = Auxiliary.optPES(uTotal, [1.0, 1.0], Auxiliary.Optim.BFGS)
-#     eTS = uTotal(0.0, 0.0)
-#     ΔE = eTS - minVal
-#     @printf("%9.7f %9.7f %9.7f %9.5f\n", minVal, eTS, ΔE, exp(-ΔE/300*au2kelvin))
-# end
