@@ -119,7 +119,7 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
     couple = sqrt(2/ωc^3) * chi
 
     rng = Random.seed!(1233+Threads.threadid())
-    angles = similar(mass)
+    angles = Vector{Float64}(undef, nMolecule)
     getRandomAngles!(angles, rng)
     sumCosθ = sum(angles)
     # array to store equilibrated molecule and photon coordinates for the next trajectory
@@ -353,8 +353,8 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
             cosθ = angle[i]
             dv, μ, dμ = computeForceComponents(x[i])
             # f[i] = dv + (tmp + χ2byω * μ) * dμ
-            f[i] = dv + tmp * dμ * cosθ
-            ∑μ += μ * cosθ
+            f[i] = dv + tmp * dμ # * cosθ
+            ∑μ += μ # * cosθ
         end
         f[end] = kPho2 * q - sqrt2ωχ * ∑μ
     end
