@@ -307,7 +307,7 @@ function temperatureDependency()
 end
 
 # temperatureDependency()
-dir = string("chi_wc")
+dir = "chi_wc"
 if ! isdir(dir)
     mkdir(dir)
 end
@@ -321,7 +321,7 @@ function testKappa()
         np = 2
         wc = 0.16
     end
-    chi = 0.004 # / sqrt(np)
+    chi = 0.02 * wc # / sqrt(np)
     @time computeKappa(np, 300.0, 1, 1, wc, chi)
     Profile.clear_malloc_data()
     @time computeKappa(np, 300.0, 1000, 2000, wc, chi)
