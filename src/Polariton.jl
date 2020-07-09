@@ -1,58 +1,3 @@
-module Auxiliary
-"""
-    Some physical constants useful to the simulation
-"""
-
-using Constants
-using IntervalArithmetic, IntervalRootFinding
-
-# FIXME: switch to packages like FiniteDiff or ForwardDiff
-"""
-    normalModeAnalysis(x0::Array{Float64,1})
-
-Return normal mode frequencies, eigenvectors and crossover temperature
-"""
-function normalModeAnalysis(u::Function, x0::Array{Float64,1}, omegaC::Float64)
-    hf = Calculus.hessian(x -> u(x[1], x[2]))
-    mat = hf(x0)
-    # possibly a bug in Calculus package
-    # when ω is fairly small, ∂²V/∂q² will be ZERO
-    mat_og = copy(mat)
-    mat[1, 1] /= amu2au
-    mat[2, 1] /= sqrt(amu2au)
-    mat[1, 2] = mat[2, 1]
-    mat[2, 2] = omegaC^2
-    lambda = Calculus.eigvals(mat)
-    v = Calculus.eigvecs(mat)
-    if lambda[1] < 0
-        lambda[1] = -sqrt(-lambda[1])
-        tC = -lambda[1] / (2pi) * au2kelvin
-    else
-        lambda[1] = sqrt(lambda[1])
-        tC = NaN
-    end
-    lambda[2] = sqrt(lambda[2])
-    return lambda*au2wn, v, tC
-end
-
-"""
-    function saddlePoints(f::Function, low::T, high::T) where T<:Real
-
-Find the roots of a given univariate function f in a given range [low, high],
-and return a sorted vector of roots via `IntervalRootFinding`. Note that only 
-a pure Julia function will work with `IntervalRootFinding`.
-"""
-function saddlePoints(f::Function, low::T, high::T) where T<:Real
-    result = roots(f, low..high)
-    loc = Vector{Float64}(undef, 0)
-    for i in result
-        push!(loc, mid(i.interval))
-    end
-    return sort(loc)
-end
-
-end
-
 include("CorrelationFunctions.jl")
 include("Dynamics.jl")
 include("Initialization.jl")
@@ -64,7 +9,6 @@ using Random
 using WHAM
 using Statistics: mean, varm
 using ..Dynamics
-using ..Auxiliary
 using ..CorrelationFunctions
 
 const corr = CorrelationFunctions
@@ -91,13 +35,13 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
     vm0 = copy(mol.v)
     vb0 = copy(bath.v)
     @inbounds for i in 1:nTraj
-        # traj = string("traj_", param.nMol, "_test.txt")
+        # traj = string("traj_", i, "_couple.txt")
         # output = open(traj, "w")
         copy!(mol.x, xm0)
         copy!(bath.x, xb0)
         copy!(mol.v, vm0)
         copy!(bath.v, vb0)
-        getRandomAngles!(mol.cosθ, rng)
+        # getRandomAngles!(mol.cosθ, rng)
         Dynamics.equilibration!(mol, bath, 3000, rng, param, forceEval!, cache)
         copy!(xm0, mol.x)
         copy!(xb0, bath.x)
@@ -113,7 +57,7 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
             Dynamics.velocityVerlet!(mol, bath, param, rng, forceEval!, cache)
             # Dynamics.velocityVerlet!(mol, bath, param, forceEval!)
             q[j] = mol.x[1]
-            # println(output, j, " ", mol.x[1])
+            # println(output, j, " ", mol.x[1], " ", mol.f[1], " ", mol.x[end])
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[end])
             # println(output, j, " ", mean(@view mol.x[2:end-1]))
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", 918.0 * mol.v[1]^2)
@@ -145,7 +89,7 @@ end
 
 function printKappa(fs::AbstractVector{T}, ωc::T, chi::T, temp::T,
     param::Dynamics.Parameters) where T <: AbstractFloat
-    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_fixed_angle.txt")
+    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_reverse.txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
     @printf(fsOut, "# ω_c=%7.3e,χ=%6.4g \n", ωc, chi)
@@ -307,7 +251,7 @@ function temperatureDependency()
 end
 
 # temperatureDependency()
-dir = "chi_wc"
+dir = "test"
 if ! isdir(dir)
     mkdir(dir)
 end
@@ -321,7 +265,7 @@ function testKappa()
         np = 2
         wc = 0.16
     end
-    chi = 0.02 * wc # / sqrt(np)
+    chi = 0.05* wc # / sqrt(np)
     @time computeKappa(np, 300.0, 1, 1, wc, chi)
     Profile.clear_malloc_data()
     @time computeKappa(np, 300.0, 1000, 2000, wc, chi)

@@ -1,5 +1,6 @@
 using Constants
 using Random
+using LinearAlgebra: dot
 
 # Fourier series fitted parameters
 # dipole
@@ -15,10 +16,248 @@ const pesCoeff = [0.4480425396401699 0.8960850792803398 1.3441276189205096 1.792
 
 # equilibirium position of R coordinate under the current potenial
 const xeq = -1.735918600503033
-const mueq = -1.2197912355997298
+const ω0 = 0.0062736666471555754
+const μeq = 1.2197912355997298
+const dμ0 = -2.0984725146374075
+const dμeq = 0.2253318892690798
 const freqCutoff = 500.0 / au2wn
 const eta = 4.0 * amu2au * freqCutoff
 const gamma = eta / amu2au / 5.0
+
+"""
+    function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Integer, T2<:Real}
+
+Initialize most of the values, parameters and structs for the dynamics.
+"""
+# TODO better and more flexible way to handle input values
+function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
+    dynamics::Symbol=:langevin, model::Symbol=:normalModes) where {T1<:Integer, T2<:Real}
+
+    nPhoton = 1
+    nMolecule = nParticle - nPhoton
+    # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
+    nBath = 15
+    dt = 4.0
+    ν = 0.05
+    τ = floor(Int64, 1/ν)
+    # collisionFrequency 
+    z = ν * dt
+
+    # check if the number of molecules and photons make sense
+    nParticle, nMolecule, label, mass = checkParticleNumbers(nParticle,
+        nMolecule, chi, model)
+    # total number of bath modes
+    nBathTotal = nMolecule * nBath
+
+    # the suffix for all output file names to identify the setup and avoid overwritting
+    flnmID = string(ωc, "_", chi, "_", temp, "_", nMolecule, ".txt")
+    # convert values to au, so we can keep more human-friendly values outside
+    ωc /= au2ev
+    chi /= au2ev
+    temp /= au2kelvin
+    couple = sqrt(2/ωc^3) * chi
+    # println("+: ", λ₊^2 * nMolecule * μeq * dμ0 / sqrt(amu2au) / ω₊, " ", ω₊)
+    # println("-: ", λ₋^2 * nMolecule * μeq * dμ0 / sqrt(amu2au) / ω₋, " ", ω₋)
+
+    rng = Random.seed!(1233+Threads.threadid())
+    # angles = Vector{Float64}(undef, nMolecule)
+    # getRandomAngles!(angles, rng)
+    angles = ones(nMolecule)
+    sumCosθ = sum(angles)
+    # array to store equilibrated molecule and photon coordinates for the next trajectory
+    x0 = repeat([-xeq], nParticle)
+    x0[1] = 0.0
+    if nMolecule > 1
+        x0[end] = couple * μeq * (sumCosθ-1)
+    else
+        x0[end] = 0.0
+    end
+
+    if dynamics == :SystemBath
+        bath, cache = buildBath(nBath, nMolecule, x0, temp, dt)
+    else
+        # for Langevin dynamics
+        bath, cache = langevinParameters(nMolecule, temp, dt, mass)
+    end
+    if model == :normalModes
+        q₊, q₋, forceEvaluation! = reducedModelSetup(ωc, chi, sumCosθ, angle)
+        param = Dynamics.ReducedModelParameters(temp, dt, nMolecule)
+        mol = Dynamics.ReducedModelParticle(label, sqrt(temp), dt/2.0,
+            [0.0, q₊, q₋], zeros(3), zeros(3), angles)
+        return rng, param, mol, bath, forceEvaluation!, cache, flnmID
+    end
+
+    # angles for the dipole moment
+    param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
+        nBathTotal, 1, 1, 1)
+    mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
+        x0, similar(mass), param.Δt./(2*mass), similar(mass), angles)
+    # obatin the gradient of the corresponding potential
+    forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
+    return rng, param, mol, bath, forceEvaluation!, cache, flnmID
+end
+
+"""
+    function computeBathParameters(nBath::T) where T<:Integer
+
+Compute bath parameters including coupling strength `cᵢ`, frequencies `ωᵢ` and
+`mωᵢ^2` and `cᵢ/mωᵢ^2`. They will be used to compute forces.
+"""
+function computeBathParameters(nBath::T) where T<:Integer
+    nb = convert(Float64, nBath)
+    ω = Vector{Float64}(undef, nBath)
+    mω2 = similar(ω)
+    c = similar(ω)
+    c_mω2 = similar(ω)
+    tmp = sqrt(2eta * amu2au * freqCutoff / nb / pi)
+    @inbounds @simd for i in eachindex(1:nBath)
+        # bath mode frequencies
+        ω[i] = -freqCutoff * log((i-0.5) / nb)
+        # bath force constants
+        mω2[i] = ω[i]^2 * amu2au
+        # bath coupling strength
+        c[i] = tmp * ω[i]
+        # c/mω^2, for force evaluation
+        c_mω2[i] = c[i] / mω2[i]
+    end
+    return ω, mω2, c, c_mω2 
+end
+
+function langevinParameters(nMolecule::Integer, temp::T, dt::T,
+    mass::AbstractVector{T}) where T<:Real
+    # sigma for the random force. Note dt is included
+    σ = sqrt(2gamma * temp * dt / amu2au)
+    # temporary variable for 0.5 * dt^2
+    halfΔt2 = 0.5 * dt^2
+    # 0.5 * dt^2 * gamma for position update
+    halfΔt2γ = halfΔt2 * gamma
+    # dt * gamma for velocity update
+    dtγ = dt * gamma
+    # 0.5 * dt * sigma for the random force in position update
+    dtσ = 0.5 * dt * σ
+    # 0.5 * dt^2 / m for position update
+    dt2by2m = halfΔt2 ./ mass
+    # call it bath to keep it consistent with the name of the system-bath struct
+    # last two fields are dummy, just to keep the main function functioning
+    # as saving bath coordinates is necessary for system-bath model
+    # TODO properly split system-bath model and langevin dynamics. A disptach might be necessary.
+    bath = Dynamics.Langevin(gamma, σ, halfΔt2γ, dtγ, dtσ, dt2by2m, [1.0],
+        [1.0])
+    cache = Dynamics.LangevinCache(Vector{Float64}(undef, 3),
+        Vector{Float64}(undef, 3*(nMolecule-1)),similar(mass),
+        similar(mass))
+    return bath, cache
+end
+
+function reducedModelSetup(ωc::T, χ::T, sumCosθ::T, cosθ::AbstractVector{T}) where T<:Real
+
+    massWeight = sqrt(amu2au)
+    mwμeq = μeq / massWeight
+    λ = sqrt(2ωc) * χ
+    αi2 = (λ * mwμeq)^2
+    sumαi = dot(αi2, cosθ)
+    ω₊2, ω₋2, Θ = computeModesFreq(ωc, sumαi)
+    ω₊ = ω₊2
+    ω₋ = ω₋2
+    λ₊ = λ * cos(Θ)
+    λ₋ = -λ * sin(Θ)
+    return constructForce(ω₊2, ω₋2, λ₊, λ₋, massWeight, sumCosθ)
+end
+
+function constructForce(ω₊2::T, ω₋2::T, λ₊::T, λ₋::T, mw::T, sumCosθ::T) where T<:Real
+    mwλ₊ = λ₊ / mw
+    mwλ₋ = λ₋ / mw
+    mwλ₊μeq = mwλ₊ * μeq
+    mwλ₋μeq = mwλ₋ * μeq
+    q₊ = mwλ₊μeq * sumCosθ / ω₊2
+    q₋ = mwλ₋μeq * sumCosθ / ω₋2
+    function force3Modes!(f::T, x::T, cosθ::T) where T<:AbstractVector{T2} where T2<:Real
+        sumCosθ = sum(cosθ)
+        dv, μ, dμ = computeForceComponents(x[1])
+        q₊ = x[2]
+        q₋ = x[3]
+        f[1] = mw * dv + (mwλ₊ * q₊ + mwλ₋ * q₋) * dμ
+        f[2] = -ω₊2 * q₊ - mwλ₊μeq * sumCosθ - λ₊ * μ
+        f[3] = -ω₋2 * q₋ + mwλ₋μeq * sumCosθ + λ₋ * μ
+    end
+    return q₊, q₋, force3Modes!
+end
+
+function computeModesFreq(ωc::T, sumαi::T) where T<:Real
+    wc2 = ωc^2
+    w02 = ω0^2
+    plus = wc2 + w02
+    minus = wc2 - w02
+    ac = sqrt(minus^2 + 4.0 * sumαi)
+    ω₊2 = (plus + ac) / 2.0
+    ω₋2 = (plus - ac) / 2.0
+    Θ = atan(2.0sqrt(sumαi) / minus) / 2.0
+    return ω₊2, ω₋2, Θ
+end
+
+function buildBath(nBath::T1, nMolecule::T1, x0::AbstractVector{T2}, temp::T2,
+    dt::T2) where {T1<:Integer, T2<:Real}
+    # compute coefficients for bath modes
+    ω, mω2, c, c_mω2 = computeBathParameters(nBath)
+    # array to store equilibrated bath coordinates for the next trajectory
+    xb0 = Vector{Float64}(undef, nMolecule * nBath)
+    # assgin the equilibrium positions as the initial positions of bath
+    index = 0
+    for i in eachindex(1:nMolecule)
+        @inbounds @simd for j in eachindex(1:nBath)
+            index += 1
+            xb0[index] = x0[i] * c_mω2[j]
+        end
+    end
+    bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
+        ω, c, mω2, c_mω2, xb0, similar(xb0), dt/(2*amu2au), similar(xb0))
+    # pre-allocated array to avoid allocations for force evaluation
+    cache = Dynamics.SystemBathCache(Vector{Float64}(undef, nMolecule),
+        similar(xb0))
+    return bath, cache
+end
+
+function getRandomAngles!(angles::AbstractVector{Float64}, rng::AbstractRNG)
+    Random.rand!(rng, angles)
+    @. angles = cos(angles * 2pi)
+end
+
+"""
+    function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2) where {T1<:Integer, T2<:Real}
+
+Check if the number of total particle, molecules and photons make sense. Should
+not be very meaningful for now. Keep for future.
+"""
+function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2,
+    model::Symbol) where {T1<:Integer, T2<:Real}
+
+    if nParticle != nMolecule && chi != 0.0
+        # χ != 0 
+        if nParticle - nMolecule > 1
+            println("Multi-modes not supported currently. Reduce to single-mode.")
+            nMolecule = nParticle - 1
+        end
+        if model == :normalModes
+            # 3 modes reduced Hamiltonian
+            label = ["mol", "q₊", "q₋"]
+            mass = [1.0, 1.0, 1.0]
+            return nParticle, nMolecule, label, mass
+        end
+        label = ["photon"]
+        mass = [1.0]
+    else
+        if nMolecule > 1
+            println("In no-coupling case, multi-molecule does not make sense. Reduce to single-molecule.")
+            nParticle = 1
+            nMolecule = 1
+        end
+        label = Vector{String}(undef, 0)
+        mass = Vector{Float64}(undef, 0)
+    end
+    label = vcat(repeat(["mol"], nMolecule), label)
+    mass = vcat(repeat([amu2au], nMolecule), mass)
+    return nParticle, nMolecule, label, mass
+end
 
 """
     function dipole(x::T) where T<:Real
@@ -83,170 +322,6 @@ function dμdr(x::T) where T<:Real
         dμ += dipoleCoeff[4, i] * cos(ϕ)
     end
     return dμ
-end
-
-"""
-    function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Integer, T2<:Real}
-
-Initialize most of the values, parameters and structs for the dynamics.
-"""
-# TODO better and more flexible way to handle input values
-function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
-    model::Symbol=:langevin) where {T1<:Integer, T2<:Real}
-
-    nPhoton = 1
-    nMolecule = nParticle - nPhoton
-    # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
-    nBath = 15
-    dt = 4.0
-    ν = 0.05
-    τ = floor(Int64, 1/ν)
-    # collisionFrequency 
-    z = ν * dt
-
-    # check if the number of molecules and photons make sense
-    nParticle, nMolecule, label, mass = checkParticleNumbers(nParticle,
-        nMolecule, chi)
-    # total number of bath modes
-    nBathTotal = nMolecule * nBath
-
-    # the suffix for all output file names to identify the setup and avoid overwritting
-    flnmID = string(ωc, "_", chi, "_", temp, "_", nMolecule, ".txt")
-    # convert values to au, so we can keep more human-friendly values outside
-    ωc /= au2ev
-    chi /= au2ev
-    temp /= au2kelvin
-    couple = sqrt(2/ωc^3) * chi
-
-    rng = Random.seed!(1233+Threads.threadid())
-    angles = Vector{Float64}(undef, nMolecule)
-    getRandomAngles!(angles, rng)
-    sumCosθ = sum(angles)
-    # array to store equilibrated molecule and photon coordinates for the next trajectory
-    x0 = repeat([xeq], nParticle)
-    x0[1] = 0.0
-    if nMolecule > 1
-        x0[end] = couple * mueq * (nMolecule-1) * sumCosθ
-    else
-        x0[end] = 0.0
-    end
-    
-    if model == :SystemBath
-        bath, cache = buildBath(nBath, nMolecule, temp, dt)
-    else
-        # for Langevin dynamics
-        # sigma for the random force. Note dt is included
-        σ = sqrt(2gamma * temp * dt / amu2au)
-        # temporary variable for 0.5 * dt^2
-        halfΔt2 = 0.5 * dt^2
-        # 0.5 * dt^2 * gamma for position update
-        halfΔt2γ = halfΔt2 * gamma
-        # dt * gamma for velocity update
-        dtγ = dt * gamma
-        # 0.5 * dt * sigma for the random force in position update
-        dtσ = 0.5 * dt * σ
-        # 0.5 * dt^2 / m for position update
-        dt2by2m = halfΔt2 ./ mass
-        # call it bath to keep it consistent with the name of the system-bath struct
-        # last two fields are dummy, just to keep the main function functioning
-        # as saving bath coordinates is necessary for system-bath model
-        # TODO properly split system-bath model and langevin dynamics. A disptach might be necessary.
-        bath = Dynamics.Langevin(gamma, σ, halfΔt2γ, dtγ, dtσ, dt2by2m, [1.0],
-            [1.0])
-        cache = Dynamics.LangevinCache(Vector{Float64}(undef, 3),
-            Vector{Float64}(undef, 3*(nMolecule-1)),similar(mass),
-            similar(mass))
-    end
-    # angles for the dipole moment
-    param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
-        nBathTotal, 1, 1, 1)
-    mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
-        x0, similar(mass), param.Δt./(2*mass), similar(mass), angles)
-    # obatin the gradient of the corresponding potential
-    forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
-    return rng, param, mol, bath, forceEvaluation!, cache, flnmID
-end
-
-"""
-    function computeBathParameters(nBath::T) where T<:Integer
-
-Compute bath parameters including coupling strength `cᵢ`, frequencies `ωᵢ` and
-`mωᵢ^2` and `cᵢ/mωᵢ^2`. They will be used to compute forces.
-"""
-function computeBathParameters(nBath::T) where T<:Integer
-    nb = convert(Float64, nBath)
-    ω = Vector{Float64}(undef, nBath)
-    mω2 = similar(ω)
-    c = similar(ω)
-    c_mω2 = similar(ω)
-    tmp = sqrt(2eta * amu2au * freqCutoff / nb / pi)
-    @inbounds @simd for i in eachindex(1:nBath)
-        # bath mode frequencies
-        ω[i] = -freqCutoff * log((i-0.5) / nb)
-        # bath force constants
-        mω2[i] = ω[i]^2 * amu2au
-        # bath coupling strength
-        c[i] = tmp * ω[i]
-        # c/mω^2, for force evaluation
-        c_mω2[i] = c[i] / mω2[i]
-    end
-    return ω, mω2, c, c_mω2 
-end
-
-function buildBath(nBath::T1, nMolecule::T1, temp::T2, dt::T2) where {
-    T1<:Integer, T2<:Real}
-    # compute coefficients for bath modes
-    ω, mω2, c, c_mω2 = computeBathParameters(nBath)
-    # array to store equilibrated bath coordinates for the next trajectory
-    xb0 = Vector{Float64}(undef, nMolecule * nBath)
-    # assgin the equilibrium positions as the initial positions of bath
-    index = 0
-    for i in eachindex(1:nMolecule)
-        @inbounds @simd for j in eachindex(1:nBath)
-            index += 1
-            xb0[index] = x0[i] * c_mω2[j]
-        end
-    end
-    bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
-        ω, c, mω2, c_mω2, xb0, similar(xb0), dt/(2*amu2au), similar(xb0))
-    # pre-allocated array to avoid allocations for force evaluation
-    cache = Dynamics.SystemBathCache(Vector{Float64}(undef, nMolecule),
-        similar(xb0))
-    return bath, cache
-end
-
-function getRandomAngles!(angles::AbstractVector{Float64}, rng::AbstractRNG)
-    Random.rand!(rng, angles)
-    @. angles = cos(angles * 2pi)
-end
-
-"""
-    function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2) where {T1<:Integer, T2<:Real}
-
-Check if the number of total particle, molecules and photons make sense. Should
-not be very meaningful for now. Keep for future.
-"""
-function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2) where {T1<:Integer, T2<:Real}
-    if nParticle != nMolecule && chi != 0.0
-        # χ != 0 
-        if nParticle - nMolecule > 1
-            println("Multi-modes not supported currently. Reduce to single-mode.")
-            nMolecule = nParticle - 1
-        end
-        label = ["photon"]
-        mass = [1.0]
-    else
-        if nMolecule > 1
-            println("In no-coupling case, multi-molecule does not make sense. Reduce to single-molecule.")
-            nParticle = 1
-            nMolecule = 1
-        end
-        label = Vector{String}(undef, 0)
-        mass = Vector{Float64}(undef, 0)
-    end
-    label = vcat(repeat(["mol"], nMolecule), label)
-    mass = vcat(repeat([amu2au], nMolecule), mass)
-    return nParticle, nMolecule, label, mass
 end
 
 """
@@ -348,7 +423,7 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
 
         ∑μ = 0.0
         q = x[end]
-        tmp = q * sqrt2ωχ
+        tmp = q * sqrt2ωχ 
         @inbounds @simd for i in eachindex(1:length(x)-1)
             cosθ = angle[i]
             dv, μ, dμ = computeForceComponents(x[i])
@@ -386,3 +461,7 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
         end
     end
 end
+
+
+# rng, param, mol, bath, forceEval!, cache, flnmID = initialize(255, 300.0,
+#     0.04, 0.04*0.02)

@@ -1,13 +1,14 @@
 using StaticArrays
 
 abstract type Particles end
+abstract type DynamicsParameters end
 abstract type Bath end
 abstract type Cache end
 abstract type Particles1D <: Particles end
 abstract type ParticlesND <: Particles end
 abstract type Bath1D <: Bath end
 
-struct Parameters
+struct Parameters <: DynamicsParameters
     temperature::Float64
     Δt::Float64
     z::Float64
@@ -20,12 +21,27 @@ struct Parameters
     beadBath::Int16
 end
 
+struct ReducedModelParameters <: DynamicsParameters
+    temperature::Float64
+    Δt::Float64
+    nMol::Int32
+end
+mutable struct ReducedModelParticle <: Particles1D
+    label::Vector{String}
+    σ::Float64
+    dtby2m::Float64
+    x::MVector{3, Float64}
+    f::MVector{3, Float64}
+    v::MVector{3, Float64}
+    cosθ::Vector{Float64}
+end
+
 mutable struct ClassicalParticle <: Particles1D
     n::Int32
     label::Vector{String}
     m::Vector{Float64}
     σ::Vector{Float64}
-    x::Vector{Float64}
+    x::MVector{Float64}
     f::Vector{Float64}
     dtby2m::Vector{Float64}
     v::Vector{Float64}
@@ -44,13 +60,6 @@ mutable struct ClassicalBathMode <: Bath1D
     f::Vector{Float64}
     dtby2m::Float64
     v::Vector{Float64}
-end
-
-mutable struct QuantumParticle <: ParticlesND
-    label::Vector{String}
-    m::Vector{Float64}
-    x::Array{Float64, 2}
-    v::Array{Float64, 2}
 end
 
 mutable struct Langevin <: Bath
