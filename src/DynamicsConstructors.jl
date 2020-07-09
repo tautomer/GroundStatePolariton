@@ -7,6 +7,7 @@ abstract type Cache end
 abstract type Particles1D <: Particles end
 abstract type ParticlesND <: Particles end
 abstract type Bath1D <: Bath end
+abstract type Langevin <: Bath1D end
 
 struct Parameters <: DynamicsParameters
     temperature::Float64
@@ -30,10 +31,11 @@ mutable struct ReducedModelParticle <: Particles1D
     label::Vector{String}
     σ::Float64
     dtby2m::Float64
-    x::MVector{3, Float64}
-    f::MVector{3, Float64}
-    v::MVector{3, Float64}
+    x::Vector{Float64}
+    f::Vector{Float64}
+    v::Vector{Float64}
     cosθ::Vector{Float64}
+    sumCosθ::Float64
 end
 
 mutable struct ClassicalParticle <: Particles1D
@@ -41,7 +43,7 @@ mutable struct ClassicalParticle <: Particles1D
     label::Vector{String}
     m::Vector{Float64}
     σ::Vector{Float64}
-    x::MVector{Float64}
+    x::Vector{Float64}
     f::Vector{Float64}
     dtby2m::Vector{Float64}
     v::Vector{Float64}
@@ -62,13 +64,24 @@ mutable struct ClassicalBathMode <: Bath1D
     v::Vector{Float64}
 end
 
-mutable struct Langevin <: Bath
+mutable struct LangevinFull <: Langevin
     γ::Float64
     σ::Float64
     halfΔt2γ::Float64
     dtγ::Float64
     dtσ::Float64
     dt2by2m::Vector{Float64}
+    x::Vector{Float64}
+    v::Vector{Float64}
+end
+
+mutable struct LangevinModes <: Langevin
+    γ::Float64
+    σ::Float64
+    halfΔt2γ::Float64
+    dtγ::Float64
+    dtσ::Float64
+    dt2by2m::Float64
     x::Vector{Float64}
     v::Vector{Float64}
 end

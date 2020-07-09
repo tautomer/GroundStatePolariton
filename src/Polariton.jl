@@ -17,7 +17,7 @@ function computeKappa(nParticle::T2, temp::T1, nTraj::T2, nStep::T2, ωc::T1,
     chi::T1) where {T1<:Real, T2<:Integer}
 
     rng, param, mol, bath, forceEval!, cache, flnmID = initialize(nParticle, temp,
-        ωc, chi, model=:langevin)
+        ωc, chi, dynamics=:langevin, model=:normalModes)
 
     fs0 = 0.0
     fs = zeros(nStep)
@@ -88,8 +88,8 @@ function reactiveEnergy(p::Dynamics.ClassicalParticle)
 end
 
 function printKappa(fs::AbstractVector{T}, ωc::T, chi::T, temp::T,
-    param::Dynamics.Parameters) where T <: AbstractFloat
-    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_reverse.txt")
+    param::Dynamics.DynamicsParameters) where T <: AbstractFloat
+    flnm = string("fs_", ωc, "_", chi, "_", temp, "_", param.nMol, "_modes.txt")
     fsOut = open(flnm, "w")
     @printf(fsOut, "# Thread ID %3d\n", Threads.threadid())
     @printf(fsOut, "# ω_c=%7.3e,χ=%6.4g \n", ωc, chi)
@@ -251,7 +251,7 @@ function temperatureDependency()
 end
 
 # temperatureDependency()
-dir = "test"
+dir = "energy"
 if ! isdir(dir)
     mkdir(dir)
 end

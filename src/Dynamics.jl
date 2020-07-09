@@ -34,7 +34,7 @@ function velocitySampling!(p::ClassicalParticle, b::ClassicalBathMode, rng::Abst
     b.v .*= b.σ
 end
 
-function velocitySampling!(p::ClassicalParticle, b::Langevin, rng::AbstractRNG)
+function velocitySampling!(p::Particles1D, b::Langevin, rng::AbstractRNG)
     Random.randn!(rng, p.v)
     p.v .*= p.σ
 end
@@ -88,6 +88,83 @@ function velocityUpdate(v::T, f::T, r3::T, fOld::T, dtby2m::T, acc::T,
     return v
 end
 
+function velocityVerlet!(p::ReducedModelParticle, lgv::LangevinModes, 
+    param::ReducedModelParameters, rng::AbstractRNG, ∇u!::Function, cache::T,
+    ::Val{:cnstr}) where T<:Cache
+
+    # obatin all three random numbers at once
+    Random.randn!(rng, cache.ran2)
+    # copy current forces to cache
+    copy!(cache.cacheMol1, p.f)
+    # apply the constraint
+    p.x[1] = 0.0
+    p.v[1] = 0.0
+    # update the position and velocities for each molecule
+    cache.cacheMol2[2] = lgv.dt2by2m * p.f[2] - lgv.halfΔt2γ * p.v[2] + 
+        randomForce(lgv.dtσ, cache.ran2[1], cache.ran2[2])
+    p.x[2] += p.v[2] * param.Δt + cache.cacheMol2[2]
+    cache.cacheMol2[3] = lgv.dt2by2m * p.f[3] - lgv.halfΔt2γ * p.v[3] + 
+        randomForce(lgv.dtσ, cache.ran2[3], cache.ran2[4])
+    p.x[3] += p.v[3] * param.Δt + cache.cacheMol2[3]
+    # compute new forces
+    force!(p, lgv, ∇u!)
+    # update the velocity for each molecule
+    @inbounds @simd for i in 2:3
+        p.v[i] = velocityUpdate(p.v[i], p.f[i], cache.ran2[i+3],
+            cache.cacheMol1[i], p.dtby2m, cache.cacheMol2[i], lgv)
+    end
+end
+
+function velocityVerlet!(p::ReducedModelParticle, lgv::LangevinModes, 
+    param::ReducedModelParameters, rng::AbstractRNG, ∇u!::Function, cache::T,
+    ) where T<:Cache
+
+    # obatin all three random numbers at once
+    Random.randn!(rng, cache.ran1)
+    # copy current forces to cache
+    copy!(cache.cacheMol1, p.f)
+    # update the position and velocities for each molecule
+    cache.cacheMol2[1] = lgv.dt2by2m * p.f[1] - lgv.halfΔt2γ * p.v[1] + 
+        randomForce(lgv.dtσ, cache.ran2[1], cache.ran2[2])
+    p.x[1] += p.v[1] * param.Δt + cache.cacheMol2[1]
+    @inbounds @simd for i in 2:3
+        p.x[i] += p.v[i] * param.Δt + p.f[i] * lgv.dt2by2m
+    end
+    # compute new forces
+    force!(p, lgv, ∇u!)
+    p.v[1] = velocityUpdate(p.v[1], p.f[1], cache.ran1[3], cache.cacheMol1[1],
+        p.dtby2m, cache.cacheMol2[1], lgv)
+    # update the velocity for each molecule
+    @inbounds @simd for i in 2:3
+        p.v[i] += (cache.cacheMol1[i]+p.f[i]) * p.dtby2m[i]
+    end
+end
+
+function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
+    rng::AbstractRNG, ∇u!::Function, cache::T) where T<:Cache
+
+    # obatin all three random numbers at once
+    Random.randn!(rng, cache.ran1)
+    # copy current forces to cache
+    copy!(cache.cacheMol1, p.f)
+    # update the position for the first molecule
+    cache.cacheMol2[1], p.x[1] = positionUpdate(p.x[1], p.v[1], p.f[1],
+        cache.ran1[1], cache.ran1[2], param.Δt, lgv)
+    # update the position for the rest DOF
+    @inbounds @simd for i in 2:param.nParticle
+        p.x[i] += p.v[i] * param.Δt + p.f[i] * lgv.dt2by2m[i]
+    end
+    # compute new forces
+    ∇u!(p.f, p.x, p.cosθ)
+    # update the velocity for each molecule
+    p.v[1] = velocityUpdate(p.v[1], p.f[1], cache.ran1[3], cache.cacheMol1[1],
+        p.dtby2m[1], cache.cacheMol2[1], lgv)
+    # update the velocity for the photon
+    @inbounds @simd for i in 2:param.nParticle
+        p.v[i] += (cache.cacheMol1[i]+p.f[i]) * p.dtby2m[i]
+    end
+end
+
 function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
     rng::AbstractRNG, ∇u!::Function, cache::T, ::Val{:cnstr}) where T<:Cache
 
@@ -117,31 +194,6 @@ function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
     end
     # update the velocity for the photon
     p.v[end] += (cache.cacheMol1[end]+p.f[end]) * p.dtby2m[end]
-end
-
-function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
-    rng::AbstractRNG, ∇u!::Function, cache::T) where T<:Cache
-
-    # obatin all three random numbers at once
-    Random.randn!(rng, cache.ran1)
-    # copy current forces to cache
-    copy!(cache.cacheMol1, p.f)
-    # update the position for the first molecule
-    cache.cacheMol2[1], p.x[1] = positionUpdate(p.x[1], p.v[1], p.f[1],
-        cache.ran1[1], cache.ran1[2], param.Δt, lgv)
-    # update the position for the rest DOF
-    @inbounds @simd for i in 2:param.nParticle
-        p.x[i] += p.v[i] * param.Δt + p.f[i] * lgv.dt2by2m[i]
-    end
-    # compute new forces
-    ∇u!(p.f, p.x, p.cosθ)
-    # update the velocity for each molecule
-    p.v[1] = velocityUpdate(p.v[1], p.f[1], cache.ran1[3], cache.cacheMol1[1],
-        p.dtby2m[1], cache.cacheMol2[1], lgv)
-    # update the velocity for the photon
-    @inbounds @simd for i in 2:param.nParticle
-        p.v[i] += (cache.cacheMol1[i]+p.f[i]) * p.dtby2m[i]
-    end
 end
 
 function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
@@ -204,9 +256,11 @@ function force!(p::Particles1D, b::Bath1D, ∇u!::Function, ks::T, x0::T) where 
     end
 end
 
-function force!(p::Particles1D, b::Langevin, ∇u!::Function)
-
-    ∇u!(p.f, p.x)
+function force!(p::ReducedModelParticle, b::Langevin, ∇u!::Function)
+    ∇u!(p.f, p.x, p.sumCosθ)
+end
+function force!(p::ClassicalParticle, b::Langevin, ∇u!::Function)
+    ∇u!(p.f, p.x, p.cosθ)
 end
 """
     function equilibration!(p::Particles1D, b::Bath1D, nst::Int64, rng::AbstractRNG,
@@ -235,7 +289,7 @@ Equilibrate the particles with Langevin dynamics. The first molecule is
 constrained on the top of the barrier.
 """
 function equilibration!(p::Particles1D, b::Langevin, nst::Int64, rng::AbstractRNG,
-    param::Parameters, ∇u!::Function, cache::LangevinCache)
+    param::DynamicsParameters, ∇u!::Function, cache::LangevinCache)
 
     @inbounds for j in 1:nst
         velocityVerlet!(p, b, param, rng, ∇u!, cache, Val(:cnstr))

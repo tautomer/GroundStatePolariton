@@ -65,10 +65,10 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
     angles = ones(nMolecule)
     sumCosθ = sum(angles)
     # array to store equilibrated molecule and photon coordinates for the next trajectory
-    x0 = repeat([-xeq], nParticle)
+    x0 = repeat([xeq], nParticle)
     x0[1] = 0.0
     if nMolecule > 1
-        x0[end] = couple * μeq * (sumCosθ-1)
+        x0[end] = couple * -μeq * (sumCosθ-1)
     else
         x0[end] = 0.0
     end
@@ -77,13 +77,13 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
         bath, cache = buildBath(nBath, nMolecule, x0, temp, dt)
     else
         # for Langevin dynamics
-        bath, cache = langevinParameters(nMolecule, temp, dt, mass)
+        bath, cache = langevinParameters(nMolecule, temp, dt, model, mass)
     end
     if model == :normalModes
-        q₊, q₋, forceEvaluation! = reducedModelSetup(ωc, chi, sumCosθ, angle)
+        q₊, q₋, forceEvaluation! = reducedModelSetup(ωc, chi, sumCosθ)
         param = Dynamics.ReducedModelParameters(temp, dt, nMolecule)
         mol = Dynamics.ReducedModelParticle(label, sqrt(temp), dt/2.0,
-            [0.0, q₊, q₋], zeros(3), zeros(3), angles)
+            [0.0, q₊, q₋], zeros(3), zeros(3), angles, sumCosθ)
         return rng, param, mol, bath, forceEvaluation!, cache, flnmID
     end
 
@@ -123,42 +123,55 @@ function computeBathParameters(nBath::T) where T<:Integer
     return ω, mω2, c, c_mω2 
 end
 
-function langevinParameters(nMolecule::Integer, temp::T, dt::T,
+function langevinParameters(nMolecule::Integer, temp::T, dt::T, model::Symbol,
     mass::AbstractVector{T}) where T<:Real
-    # sigma for the random force. Note dt is included
-    σ = sqrt(2gamma * temp * dt / amu2au)
+
     # temporary variable for 0.5 * dt^2
     halfΔt2 = 0.5 * dt^2
     # 0.5 * dt^2 * gamma for position update
     halfΔt2γ = halfΔt2 * gamma
     # dt * gamma for velocity update
     dtγ = dt * gamma
+    if model == :normalModes
+        # sigma for the random force. Note dt is included
+        σ = sqrt(2gamma * temp * dt)
+        # 0.5 * dt^2 / m for position update
+        dt2by2m = halfΔt2
+    else
+        σ = sqrt(2gamma * temp * dt / amu2au)
+        dt2by2m = halfΔt2 ./ mass
+    end
     # 0.5 * dt * sigma for the random force in position update
     dtσ = 0.5 * dt * σ
-    # 0.5 * dt^2 / m for position update
-    dt2by2m = halfΔt2 ./ mass
     # call it bath to keep it consistent with the name of the system-bath struct
     # last two fields are dummy, just to keep the main function functioning
     # as saving bath coordinates is necessary for system-bath model
     # TODO properly split system-bath model and langevin dynamics. A disptach might be necessary.
-    bath = Dynamics.Langevin(gamma, σ, halfΔt2γ, dtγ, dtσ, dt2by2m, [1.0],
-        [1.0])
-    cache = Dynamics.LangevinCache(Vector{Float64}(undef, 3),
-        Vector{Float64}(undef, 3*(nMolecule-1)),similar(mass),
-        similar(mass))
+    if model == :normalModes
+        bath = Dynamics.LangevinModes(gamma, σ, halfΔt2γ, dtγ, dtσ, dt2by2m,
+            [1.0], [1.0])
+        cache = Dynamics.LangevinCache(Vector{Float64}(undef, 3),
+            Vector{Float64}(undef, 6), similar(mass), similar(mass))
+    else
+        bath = Dynamics.LangevinFull(gamma, σ, halfΔt2γ, dtγ, dtσ, dt2by2m,
+            [1.0], [1.0])
+        cache = Dynamics.LangevinCache(Vector{Float64}(undef, 3),
+            Vector{Float64}(undef, 3*(nMolecule-1)),similar(mass),
+            similar(mass))
+    end
     return bath, cache
 end
 
-function reducedModelSetup(ωc::T, χ::T, sumCosθ::T, cosθ::AbstractVector{T}) where T<:Real
+function reducedModelSetup(ωc::T, χ::T, sumCosθ::T) where T<:Real
 
     massWeight = sqrt(amu2au)
     mwμeq = μeq / massWeight
     λ = sqrt(2ωc) * χ
     αi2 = (λ * mwμeq)^2
-    sumαi = dot(αi2, cosθ)
+    sumαi = αi2 * sumCosθ
     ω₊2, ω₋2, Θ = computeModesFreq(ωc, sumαi)
-    ω₊ = ω₊2
-    ω₋ = ω₋2
+    # ω₊ = sqrt(ω₊2)
+    # ω₋ = sqrt(ω₋2)
     λ₊ = λ * cos(Θ)
     λ₋ = -λ * sin(Θ)
     return constructForce(ω₊2, ω₋2, λ₊, λ₋, massWeight, sumCosθ)
@@ -171,14 +184,16 @@ function constructForce(ω₊2::T, ω₋2::T, λ₊::T, λ₋::T, mw::T, sumCos�
     mwλ₋μeq = mwλ₋ * μeq
     q₊ = mwλ₊μeq * sumCosθ / ω₊2
     q₋ = mwλ₋μeq * sumCosθ / ω₋2
-    function force3Modes!(f::T, x::T, cosθ::T) where T<:AbstractVector{T2} where T2<:Real
-        sumCosθ = sum(cosθ)
-        dv, μ, dμ = computeForceComponents(x[1])
-        q₊ = x[2]
-        q₋ = x[3]
-        f[1] = mw * dv + (mwλ₊ * q₊ + mwλ₋ * q₋) * dμ
-        f[2] = -ω₊2 * q₊ - mwλ₊μeq * sumCosθ - λ₊ * μ
-        f[3] = -ω₋2 * q₋ + mwλ₋μeq * sumCosθ + λ₋ * μ
+    function force3Modes!(f::T, x::T, sumCosθ::T1) where {T<:AbstractVector{T2}, T1<:Real} where T2<:Real
+        dv, μ, dμ = computeForceComponents(x[1]/mw)
+        # q₊ = x[2]
+        # q₋ = x[3]
+        # f[1] = mw * dv + (mwλ₊ * q₊ + mwλ₋ * q₋) * dμ
+        # f[2] = -ω₊2 * q₊ - mwλ₊μeq * sumCosθ - λ₊ * μ
+        # f[3] = -ω₋2 * q₋ + mwλ₋μeq * sumCosθ + λ₋ * μ
+        f[1] = dv / mw + (mwλ₊ * x[2] + mwλ₋ * x[3]) * dμ
+        f[2] = -ω₊2 * x[2] - mwλ₊μeq * sumCosθ - λ₊ * μ
+        f[3] = -ω₋2 * x[3] + mwλ₋μeq * sumCosθ + λ₋ * μ
     end
     return q₊, q₋, force3Modes!
 end
@@ -461,7 +476,3 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
         end
     end
 end
-
-
-# rng, param, mol, bath, forceEval!, cache, flnmID = initialize(255, 300.0,
-#     0.04, 0.04*0.02)
