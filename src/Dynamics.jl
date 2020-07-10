@@ -2,16 +2,48 @@ module Dynamics
 using Random
 
 include("DynamicsConstructors.jl")
-export Parameters, ClassicalParticle, ClassicalBathMode, QuantumParticle
 
+const order = Val{:ordered}
+const disorder = Val{:disordered}
+const align = Union{order, disorder}
+
+function copyArrays!(p::Particles1D, b::Bath1D, saved::Tuple) 
+    copy!(saved[1], p.x)
+    copy!(saved[2], p.f)
+    copy!(saved[3], p.v)
+    copy!(saved[4], b.x)
+    copy!(saved[5], b.f)
+    copy!(saved[6], b.v)
+end
+
+function copyArrays!(saved::Tuple, p::Particles1D, b::Bath1D) 
+    copy!(p.x, saved[1])
+    copy!(p.f, saved[2])
+    copy!(p.v, saved[3])
+    copy!(b.x, saved[4])
+    copy!(b.f, saved[5])
+    copy!(b.v, saved[6])
+end
+
+function copyArrays!(p::Particles1D, b::Langevin, saved::Tuple)
+    copy!(saved[1], p.x)
+    copy!(saved[2], p.f)
+    copy!(saved[3], p.v)
+end
+
+function copyArrays!(saved::Tuple, p::Particles1D, b::Langevin)
+    copy!(p.x, saved[1])
+    copy!(p.f, saved[2])
+    copy!(p.v, saved[3])
+end
 """
-    function andersen!(p::ClassicalParticle, b::ClassicalBathMode, cf::T,
+    function andersen!(p::FullSystemParticle, b::ClassicalBathMode, cf::T,
         cache::DynamicsCache) where T<:Real
 
 Perform Andersen thermostat for every 1/ν steps. `cf` is the collision frequency.
 Removing COM velocity is currently missing.
 """
-function andersen!(p::ClassicalParticle, b::ClassicalBathMode, cf::T,
+function andersen!(p::FullSystemParticle, b::ClassicalBathMode, cf::T,
     rng::AbstractRNG, cache::SystemBathCache) where T<:Real
     Random.rand!(rng, cache.cacheMol1)
     @inbounds @simd for i in eachindex(p.v)
@@ -27,32 +59,28 @@ function andersen!(p::ClassicalParticle, b::ClassicalBathMode, cf::T,
     end
 end
 
-function velocitySampling!(p::ClassicalParticle, b::ClassicalBathMode, rng::AbstractRNG)
-    Random.randn!(rng, p.v)
-    p.v .*= p.σ
-    Random.randn!(rng, b.v)
-    b.v .*= b.σ
+function velocitySampling!(p::Particles1D, b::Bath1D, rng::AbstractRNG)
+
+    velocitySampling!(p, rng)
+    velocitySampling!(b, rng)
 end
 
 function velocitySampling!(p::Particles1D, b::Langevin, rng::AbstractRNG)
+
+    velocitySampling!(p, rng)
+end
+
+function velocitySampling!(p::Particles1D, rng::AbstractRNG)
     Random.randn!(rng, p.v)
     p.v .*= p.σ
 end
 
-function velocitySampling(rng::AbstractRNG, param::Parameters, p::ParticlesND)
-    n = param.beadMol
-    v = Random.randn(rng, n) * sqrt(n * param.temperature / p.m)
-    return v
-end
-
-function velocityUpdate!(p::ClassicalParticle, b::Bath1D)
+function velocityUpdate!(p::FullSystemParticle, b::Bath1D)
     @. p.v += p.f * p.dtby2m
     @. b.v += b.f * b.dtby2m
 end
 
 const invSqrt3 = 1.0 / sqrt(3.0)
-# γ = 0.0091126705341906
-# σ = sqrt(2γ/1052.58/1836.0)
 """
     function randomForce(prefac::T, r1::T, r2::T) where T<:Float64
 
@@ -90,7 +118,7 @@ end
 
 function velocityVerlet!(p::ReducedModelParticle, lgv::LangevinModes, 
     param::ReducedModelParameters, rng::AbstractRNG, ∇u!::Function, cache::T,
-    ::Val{:cnstr}) where T<:Cache
+    alignment::align, ::Val{:cnstr}) where T<:Cache
 
     # obatin all three random numbers at once
     Random.randn!(rng, cache.ran2)
@@ -107,7 +135,7 @@ function velocityVerlet!(p::ReducedModelParticle, lgv::LangevinModes,
         randomForce(lgv.dtσ, cache.ran2[3], cache.ran2[4])
     p.x[3] += p.v[3] * param.Δt + cache.cacheMol2[3]
     # compute new forces
-    force!(p, lgv, ∇u!)
+    force!(p, lgv, ∇u!, alignment)
     # update the velocity for each molecule
     @inbounds @simd for i in 2:3
         p.v[i] = velocityUpdate(p.v[i], p.f[i], cache.ran2[i+3],
@@ -117,7 +145,7 @@ end
 
 function velocityVerlet!(p::ReducedModelParticle, lgv::LangevinModes, 
     param::ReducedModelParameters, rng::AbstractRNG, ∇u!::Function, cache::T,
-    ) where T<:Cache
+    alignment::align) where T<:Cache
 
     # obatin all three random numbers at once
     Random.randn!(rng, cache.ran1)
@@ -131,7 +159,7 @@ function velocityVerlet!(p::ReducedModelParticle, lgv::LangevinModes,
         p.x[i] += p.v[i] * param.Δt + p.f[i] * lgv.dt2by2m
     end
     # compute new forces
-    force!(p, lgv, ∇u!)
+    force!(p, lgv, ∇u!, alignment)
     p.v[1] = velocityUpdate(p.v[1], p.f[1], cache.ran1[3], cache.cacheMol1[1],
         p.dtby2m, cache.cacheMol2[1], lgv)
     # update the velocity for each molecule
@@ -140,8 +168,9 @@ function velocityVerlet!(p::ReducedModelParticle, lgv::LangevinModes,
     end
 end
 
-function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
-    rng::AbstractRNG, ∇u!::Function, cache::T) where T<:Cache
+function velocityVerlet!(p::FullSystemParticle, lgv::LangevinFull,
+    param::Parameters, rng::AbstractRNG, ∇u!::Function, cache::T,
+    alignment::align) where T<:Cache
 
     # obatin all three random numbers at once
     Random.randn!(rng, cache.ran1)
@@ -155,7 +184,7 @@ function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
         p.x[i] += p.v[i] * param.Δt + p.f[i] * lgv.dt2by2m[i]
     end
     # compute new forces
-    ∇u!(p.f, p.x, p.cosθ)
+    force!(p, lgv, ∇u!, alignment)
     # update the velocity for each molecule
     p.v[1] = velocityUpdate(p.v[1], p.f[1], cache.ran1[3], cache.cacheMol1[1],
         p.dtby2m[1], cache.cacheMol2[1], lgv)
@@ -165,8 +194,9 @@ function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
     end
 end
 
-function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
-    rng::AbstractRNG, ∇u!::Function, cache::T, ::Val{:cnstr}) where T<:Cache
+function velocityVerlet!(p::FullSystemParticle, lgv::LangevinFull,
+    param::Parameters, rng::AbstractRNG, ∇u!::Function, cache::T,
+    alignment::align, ::Val{:cnstr}) where T<:Cache
 
     # obatin all three random numbers at once
     Random.randn!(rng, cache.ran2)
@@ -185,7 +215,7 @@ function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
     # update the position for the photon
     p.x[end] += p.v[end] * param.Δt + p.f[end] * lgv.dt2by2m[end]
     # compute new forces
-    ∇u!(p.f, p.x, p.cosθ)
+    force!(p, lgv, ∇u!, alignment)
     # update the velocity for each molecule
     @inbounds @simd for i in 2:p.n
         index += 1
@@ -197,23 +227,23 @@ function velocityVerlet!(p::ClassicalParticle, lgv::Langevin, param::Parameters,
 end
 
 function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
-    ∇u!::Function; cnstr=true)
+    ∇u!::Function, alignment::align; cnstr=true)
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     p.x[1] = 0.0
     @. b.x += b.v * param.Δt
-    force!(p, b, ∇u!)
+    force!(p, b, ∇u!, alignment)
     velocityUpdate!(p, b)
 end
 
 function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
-    ∇u!::Function)
+    ∇u!::Function, alignment::align)
 
     velocityUpdate!(p, b)
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
-    force!(p, b, ∇u!)
+    force!(p, b, ∇u!, alignment)
     velocityUpdate!(p, b)
 end
 
@@ -227,9 +257,7 @@ function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
     velocityUpdate!(p, b)
 end
 
-function force!(p::Particles1D, b::Bath1D, ∇u!::Function)
-
-    ∇u!(p.f, p.x)
+function forceBath!(p::FullSystemParticle, b::Bath1D)
     index = 0
     for j in 1:p.n
         @inbounds @simd for i in 1:b.n
@@ -256,12 +284,36 @@ function force!(p::Particles1D, b::Bath1D, ∇u!::Function, ks::T, x0::T) where 
     end
 end
 
-function force!(p::ReducedModelParticle, b::Langevin, ∇u!::Function)
-    ∇u!(p.f, p.x, p.sumCosθ)
+function force!(p::FullSystemParticle, b::Bath1D, ∇u!::Function, ::order)
+
+    ∇u!(p.f, p.x)
+    forceBath!(p, b)
 end
-function force!(p::ClassicalParticle, b::Langevin, ∇u!::Function)
+
+function force!(p::FullSystemParticle, b::Bath1D, ∇u!::Function, ::disorder)
+
+    ∇u!(p.f, p.x, p.cosθ)
+    forceBath!(p, b)
+end
+
+function force!(p::ReducedModelParticle, b::LangevinFull, ∇u!::Function,
+    ::order)
+
+    ∇u!(p.f, p.x)
+end
+
+function force!(p::ReducedModelParticle, b::LangevinFull, ∇u!::Function,
+    ::disorder)
+
     ∇u!(p.f, p.x, p.cosθ)
 end
+
+function force!(p::ReducedModelParticle, b::LangevinModes, ∇u!::Function,
+    ::align)
+
+    ∇u!(p.f, p.x, p.sumCosθ)
+end
+
 """
     function equilibration!(p::Particles1D, b::Bath1D, nst::Int64, rng::AbstractRNG,
         param::Parameters, ∇u!::Function, cache::SystemBathCache)
@@ -271,10 +323,10 @@ to maintain a NVE ensemble. The first molecule is constrained on the top of the
 barrier.
 """
 function equilibration!(p::Particles1D, b::Bath1D, nst::Int64, rng::AbstractRNG,
-    param::Parameters, ∇u!::Function, cache::SystemBathCache)
+    param::Parameters, ∇u!::Function, cache::SystemBathCache, alignment::align)
 
     @inbounds for j in 1:nst
-        velocityVerlet!(p, b, param, ∇u!, cnstr=true)
+        velocityVerlet!(p, b, param, ∇u!, alignment, cnstr=true)
         if j % param.τ == 0
             andersen!(p, b, param.z, rng, cache)
         end
@@ -289,10 +341,10 @@ Equilibrate the particles with Langevin dynamics. The first molecule is
 constrained on the top of the barrier.
 """
 function equilibration!(p::Particles1D, b::Langevin, nst::Int64, rng::AbstractRNG,
-    param::DynamicsParameters, ∇u!::Function, cache::LangevinCache)
+    param::DynamicsParameters, ∇u!::Function, cache::LangevinCache, alignment::align)
 
     @inbounds for j in 1:nst
-        velocityVerlet!(p, b, param, rng, ∇u!, cache, Val(:cnstr))
+        velocityVerlet!(p, b, param, rng, ∇u!, cache, alignment, Val(:cnstr))
     end
 end
 

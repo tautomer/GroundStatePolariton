@@ -3,11 +3,11 @@ using StaticArrays
 abstract type Particles end
 abstract type DynamicsParameters end
 abstract type Bath end
+abstract type Langevin end
 abstract type Cache end
 abstract type Particles1D <: Particles end
 abstract type ParticlesND <: Particles end
-abstract type Bath1D <: Bath end
-abstract type Langevin <: Bath1D end
+abstract type Bath1D <: Particles1D end
 
 struct Parameters <: DynamicsParameters
     temperature::Float64
@@ -38,7 +38,7 @@ mutable struct ReducedModelParticle <: Particles1D
     sumCosθ::Float64
 end
 
-mutable struct ClassicalParticle <: Particles1D
+mutable struct FullSystemParticle <: Particles1D
     n::Int32
     label::Vector{String}
     m::Vector{Float64}

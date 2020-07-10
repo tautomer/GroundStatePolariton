@@ -31,7 +31,8 @@ Initialize most of the values, parameters and structs for the dynamics.
 """
 # TODO better and more flexible way to handle input values
 function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
-    dynamics::Symbol=:langevin, model::Symbol=:normalModes) where {T1<:Integer, T2<:Real}
+    dynamics::Symbol=:langevin, model::Symbol=:normalModes,
+    alignment::Symbol=:ordered) where {T1<:Integer, T2<:Real}
 
     nPhoton = 1
     nMolecule = nParticle - nPhoton
@@ -50,7 +51,7 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
     nBathTotal = nMolecule * nBath
 
     # the suffix for all output file names to identify the setup and avoid overwritting
-    flnmID = string(ωc, "_", chi, "_", temp, "_", nMolecule, ".txt")
+    flnmID = string(ωc, "_", chi, "_", temp, "_", nMolecule)
     # convert values to au, so we can keep more human-friendly values outside
     ωc /= au2ev
     chi /= au2ev
@@ -60,10 +61,14 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
     # println("-: ", λ₋^2 * nMolecule * μeq * dμ0 / sqrt(amu2au) / ω₋, " ", ω₋)
 
     rng = Random.seed!(1233+Threads.threadid())
-    # angles = Vector{Float64}(undef, nMolecule)
-    # getRandomAngles!(angles, rng)
-    angles = ones(nMolecule)
-    sumCosθ = sum(angles)
+    if alignment == :ordered
+        angles = ones(nMolecule)
+        sumCosθ = convert(Float64, nMolecule)
+    else
+        angles = Vector{Float64}(undef, nMolecule)
+        getRandomAngles!(angles, rng)
+        sumCosθ = sum(angles)
+    end
     # array to store equilibrated molecule and photon coordinates for the next trajectory
     x0 = repeat([xeq], nParticle)
     x0[1] = 0.0
@@ -90,7 +95,7 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
     # angles for the dipole moment
     param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
         nBathTotal, 1, 1, 1)
-    mol = Dynamics.ClassicalParticle(nMolecule, label, mass, sqrt.(temp./mass),
+    mol = Dynamics.FullSystemParticle(nMolecule, label, mass, sqrt.(temp./mass),
         x0, similar(mass), param.Δt./(2*mass), similar(mass), angles)
     # obatin the gradient of the corresponding potential
     forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
@@ -405,14 +410,6 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
     """
     function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T}
         ) where T<:Real
-
-        interaction = (couple * dipole(x[1]) + x[2])
-        f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
-        f[2] = kPho2 * interaction
-    end
-    # TODO: properly handle whith angles and without angles
-    function forceSingleMol!(f::T, x::T, angle::T) where T<:AbstractVector{T1
-        } where T1<:Real
 
         interaction = (couple * dipole(x[1]) + x[2])
         f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
