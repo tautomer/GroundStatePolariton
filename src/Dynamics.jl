@@ -173,6 +173,32 @@ function velocityVerlet!(p::FullSystemParticle, lgv::LangevinFull,
     alignment::align) where T<:Cache
 
     # obatin all three random numbers at once
+    Random.randn!(rng, cache.ran2)
+    # copy current forces to cache
+    copy!(cache.cacheMol1, p.f)
+    # update the position for the first molecule
+    index = 0
+    @inbounds @simd for i in 1:param.nParticle
+        index += 2
+        cache.cacheMol2[i], p.x[i] = positionUpdate(p.x[i], p.v[i], p.f[i],
+            cache.ran2[index-1], cache.ran2[index], param.Δt, lgv)
+    end
+    p.x[end] += p.v[end] * param.Δt + p.f[end] * lgv.dt2by2m[end]
+    # compute new forces
+    force!(p, lgv, ∇u!, alignment)
+    @inbounds @simd for i in 1:p.n
+        index += 1
+        p.v[i] = velocityUpdate(p.v[i], p.f[i], cache.ran2[index],
+            cache.cacheMol1[i], p.dtby2m[i], cache.cacheMol2[i], lgv)
+    end
+    p.v[end] += (cache.cacheMol1[end]+p.f[end]) * p.dtby2m[end]
+end
+
+function velocityVerlet!(p::FullSystemParticle, lgv::LangevinFull,
+    param::Parameters, rng::AbstractRNG, ∇u!::Function, cache::T,
+    alignment::align) where T<:Cache
+
+    # obatin all three random numbers at once
     Random.randn!(rng, cache.ran1)
     # copy current forces to cache
     copy!(cache.cacheMol1, p.f)
@@ -188,7 +214,6 @@ function velocityVerlet!(p::FullSystemParticle, lgv::LangevinFull,
     # update the velocity for each molecule
     p.v[1] = velocityUpdate(p.v[1], p.f[1], cache.ran1[3], cache.cacheMol1[1],
         p.dtby2m[1], cache.cacheMol2[1], lgv)
-    # update the velocity for the photon
     @inbounds @simd for i in 2:param.nParticle
         p.v[i] += (cache.cacheMol1[i]+p.f[i]) * p.dtby2m[i]
     end
@@ -296,13 +321,13 @@ function force!(p::FullSystemParticle, b::Bath1D, ∇u!::Function, ::disorder)
     forceBath!(p, b)
 end
 
-function force!(p::ReducedModelParticle, b::LangevinFull, ∇u!::Function,
+function force!(p::FullSystemParticle, b::LangevinFull, ∇u!::Function,
     ::order)
 
     ∇u!(p.f, p.x)
 end
 
-function force!(p::ReducedModelParticle, b::LangevinFull, ∇u!::Function,
+function force!(p::FullSystemParticle, b::LangevinFull, ∇u!::Function,
     ::disorder)
 
     ∇u!(p.f, p.x, p.cosθ)

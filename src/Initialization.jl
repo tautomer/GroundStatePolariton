@@ -161,7 +161,7 @@ function langevinParameters(nMolecule::Integer, temp::T, dt::T, model::Symbol,
         bath = Dynamics.LangevinFull(gamma, σ, halfΔt2γ, dtγ, dtσ, dt2by2m,
             [1.0], [1.0])
         cache = Dynamics.LangevinCache(Vector{Float64}(undef, 3),
-            Vector{Float64}(undef, 3*(nMolecule-1)),similar(mass),
+            Vector{Float64}(undef, 3*nMolecule),similar(mass),
             similar(mass))
     end
     return bath, cache
@@ -170,9 +170,9 @@ end
 function reducedModelSetup(ωc::T, χ::T, sumCosθ::T) where T<:Real
 
     massWeight = sqrt(amu2au)
-    mwμeq = μeq / massWeight
+    mwdμeq = dμeq / massWeight
     λ = sqrt(2ωc) * χ
-    αi2 = (λ * mwμeq)^2
+    αi2 = (λ * mwdμeq)^2
     sumαi = αi2 * sumCosθ
     ω₊2, ω₋2, Θ = computeModesFreq(ωc, sumαi)
     # ω₊ = sqrt(ω₊2)
@@ -185,20 +185,16 @@ end
 function constructForce(ω₊2::T, ω₋2::T, λ₊::T, λ₋::T, mw::T, sumCosθ::T) where T<:Real
     mwλ₊ = λ₊ / mw
     mwλ₋ = λ₋ / mw
-    mwλ₊μeq = mwλ₊ * μeq
-    mwλ₋μeq = mwλ₋ * μeq
-    q₊ = mwλ₊μeq * sumCosθ / ω₊2
-    q₋ = mwλ₋μeq * sumCosθ / ω₋2
-    function force3Modes!(f::T, x::T, sumCosθ::T1) where {T<:AbstractVector{T2}, T1<:Real} where T2<:Real
+    λ₊μeq = λ₊ * μeq
+    λ₋μeq = λ₋ * μeq
+    q₊ = -λ₊μeq * sumCosθ / ω₊2
+    q₋ = -λ₋μeq * sumCosθ / ω₋2
+    # println(q₊, " ", q₋)
+    function force3Modes!(f::T, x::T, ∑cosθ::T1) where {T<:AbstractVector{T2}, T1<:Real} where T2<:Real
         dv, μ, dμ = computeForceComponents(x[1]/mw)
-        # q₊ = x[2]
-        # q₋ = x[3]
-        # f[1] = mw * dv + (mwλ₊ * q₊ + mwλ₋ * q₋) * dμ
-        # f[2] = -ω₊2 * q₊ - mwλ₊μeq * sumCosθ - λ₊ * μ
-        # f[3] = -ω₋2 * q₋ + mwλ₋μeq * sumCosθ + λ₋ * μ
         f[1] = dv / mw + (mwλ₊ * x[2] + mwλ₋ * x[3]) * dμ
-        f[2] = -ω₊2 * x[2] - mwλ₊μeq * sumCosθ - λ₊ * μ
-        f[3] = -ω₋2 * x[3] + mwλ₋μeq * sumCosθ + λ₋ * μ
+        f[2] = -ω₊2 * x[2] - λ₊μeq * ∑cosθ - λ₊ * μ
+        f[3] = -ω₋2 * x[3] - λ₋μeq * ∑cosθ - λ₋ * μ
     end
     return q₊, q₋, force3Modes!
 end
@@ -212,6 +208,9 @@ function computeModesFreq(ωc::T, sumαi::T) where T<:Real
     ω₊2 = (plus + ac) / 2.0
     ω₋2 = (plus - ac) / 2.0
     Θ = atan(2.0sqrt(sumαi) / minus) / 2.0
+    if Θ < 0.0
+        Θ += pi / 2.0
+    end
     return ω₊2, ω₋2, Θ
 end
 
@@ -239,7 +238,16 @@ end
 
 function getRandomAngles!(angles::AbstractVector{Float64}, rng::AbstractRNG)
     Random.rand!(rng, angles)
-    @. angles = cos(angles * 2pi)
+    # @. angles = cos(angles * 2pi)
+    angles[1] = 1.0
+    index = 1
+    for i in 1:length(angles)÷2
+        index += 1
+        tmp = cos(angles[index] * 2pi) 
+        angles[index] = tmp
+        index += 1
+        angles[index] = -tmp
+    end
 end
 
 """
@@ -440,8 +448,8 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
             cosθ = angle[i]
             dv, μ, dμ = computeForceComponents(x[i])
             # f[i] = dv + (tmp + χ2byω * μ) * dμ
-            f[i] = dv + tmp * dμ # * cosθ
-            ∑μ += μ # * cosθ
+            f[i] = dv + tmp * dμ * cosθ
+            ∑μ += μ * cosθ
         end
         f[end] = kPho2 * q - sqrt2ωχ * ∑μ
     end

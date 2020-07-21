@@ -44,7 +44,7 @@ function temperatureDependency()
 end
 
 # temperatureDependency()
-dir = "energy"
+dir = "test"
 if ! isdir(dir)
     mkdir(dir)
 end
@@ -55,32 +55,52 @@ function testKappa()
         np = parse(Int64, ARGS[1])
         wc = parse(Float64, ARGS[2])
     else
-        np = 1025
-        wc = 0.04
+        np = 200
+        wc = 0.17
     end
-    chi = 0.05 * wc # / sqrt(np)
-    input = InputValues(np, 1, 1, 300.0, wc, chi, :langevin, :normalModes, :ordered) 
+    chi = 0.5 * wc # / sqrt(np)
+    input = InputValues(np, 1, 1, 300.0, wc, chi, :langevin, :fullSystem,
+    # input = InputValues(np, 1, 1, 300.0, wc, chi, :langevin, :normalModes,
+        :disordered) 
     @time computeKappa(input)
     input.ntraj = 1000
     input.nstep = 2000
     Profile.clear_malloc_data()
     @time computeKappa(input)
 end
+
 function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)
     Profile.clear_malloc_data()
     @time umbrellaSampling(300.0, 100, 10000000, 0.15, [-3.5, 3.5], 0.16, 0.0)
 end
-testKappa()
-# chi = [0.0, 0.0002, 0.002, 0.02]
-# omegac = collect(0.04:0.04:0.2)
-# chi = collect(0.001:0.001:0.019)
-# chi = vcat(chi, collect(0.04:0.02:0.2))
-# omegac = [0.2]
-# chi = [0.02]
-# omegac = collect(0.2:0.2:1.0)
-# chi = [0.2]
-# omegac = vcat([0.001, 0.005, 0.01], collect(0.04:0.04:0.2), collect(0.4:0.2:1.0), collect(1.0:1.0:4.0))
-# omegac = collect(1.0:3.0)
-# chi = 0.02
-# wc = vcat([0.001, 0.005, 0.01, 0.05, 0.1], collect(0.11:0.01:0.2), collect(0.3:0.1:0.9), collect(1.0:10.0))
+
+function resonance(η::Float64, np::Integer)
+    wc = [0.0001, 0.005, 0.001, 0.005, 0.01, 0.04, 0.08, 0.12, 0.16, 0.2, 0.4,
+        0.6, 0.8, 1.0, 3.0, 5.0]
+    kappa = similar(wc)
+    input = InputValues(np, 1, 1, 300.0, wc[1], 0.05*wc[1], :langevin,
+        :fullSystem, :ordered) 
+    dir = string(η, "_", np-1, "_model")
+    if ! isdir(dir)
+        mkdir(dir)
+    end
+    cd(dir)
+    computeKappa(input)
+    input.nstep = 1000
+    input.ntraj = 3000
+    Threads.@threads for i in eachindex(wc)
+        χ = η * wc[i]
+        if length("$χ") >= 10
+            χ -= eps(χ)
+        end
+        input.ωc = wc[i]
+        input.χ = χ
+        fs = computeKappa(input)
+        @views kappa[i] = mean(fs[end-50:end])
+    end
+    writedlm("kappa", [wc kappa])
+end
+
+resonance(0.05, 255)
+# testKappa()

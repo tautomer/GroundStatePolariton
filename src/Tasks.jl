@@ -51,9 +51,18 @@ function computeKappa(input::InputValues)
             copy(bath.f), copy(bath.v))
     end
     @inbounds for i in 1:ntraj
-        # traj = string("traj_", i, ".txt")
+        # traj = string("traj_", i, "_model.txt")
+        # traj = string("traj_", i, "_model_large.txt")
         # output = open(traj, "w")
-        # getRandomAngles!(mol.cosθ, rng)
+        if i % 100 == 0
+            println("Running trajcetory $i")
+        end
+        if alignment == Val(:disordered)
+            getRandomAngles!(mol.cosθ, rng)
+            if input.model == :normalModes
+                mol.sumCosθ = sum(mol.cosθ)
+            end
+        end
         Dynamics.copyArrays!(savedArrays, mol, bath)
         Dynamics.equilibration!(mol, bath, 3000, rng, param, forceEval!, cache,
             alignment)
@@ -68,7 +77,7 @@ function computeKappa(input::InputValues)
             Dynamics.velocityVerlet!(mol, bath, param, rng, forceEval!, cache,
                 alignment)
             q[j] = mol.x[1]
-            # println(output, j, " ", mol.x[1])
+            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3])
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[end])
             # println(output, j, " ", mean(@view mol.x[2:end-1]))
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", 918.0 * mol.v[1]^2)
@@ -91,7 +100,7 @@ function computeKappa(input::InputValues)
     # # end
     corr.normalize!(fs, fs0)
 
-    return printKappa(fs, flnmID, param.Δt)
+    return printKappa(fs, flnmID, param.Δt, flag="disordered")
 end
 
 function reactiveEnergy(p::Dynamics.FullSystemParticle)
