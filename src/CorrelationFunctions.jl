@@ -40,4 +40,10 @@ function fluxSide!(corrFS::AbstractArray{T}, v0::T, q::AbstractArray{T}
     @. corrFS += v0 * heaviSide(q)
 end
 
+function normalize!(fs::AbstractVector{T}, fs0::T) where T<:Real
+    @inbounds @simd for i in eachindex(fs)
+        fs[i] /= fs0
+    end
+end
+
 end # module
