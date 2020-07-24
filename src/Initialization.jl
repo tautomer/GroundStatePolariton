@@ -1,6 +1,9 @@
 using Constants
 using Random
 using LinearAlgebra: dot
+using Interpolations: LinearInterpolation, Line
+using FiniteDiff: finite_difference_gradient!, GradientCache
+include("RingPolymer.jl")
 
 # Fourier series fitted parameters
 # dipole
@@ -377,6 +380,20 @@ function computeForceComponents(x::T) where T<:Real
     return dv, μ, dμ
 end
 
+function getPES(pes="../../pes_low.txt", dm="../../dm_low.txt")
+    potentialRaw = readdlm(pes)
+    dipoleRaw = readdlm(dm)
+    xrange = LinRange(potentialRaw[1, 1], potentialRaw[end, 1],
+        length(potentialRaw[:, 1]))
+    pesMol = LinearInterpolation(xrange, potentialRaw[:, 2],
+        extrapolation_bc=Line())
+    xrange = LinRange(dipoleRaw[1, 1], dipoleRaw[end, 1],
+        length(dipoleRaw[:, 1]))
+    dipole = LinearInterpolation(xrange, dipoleRaw[:, 2],
+        extrapolation_bc=Line())
+    return pesMol, dipole
+end
+
 """
     function constructForce(omegaC::T1, couple::T1, nParticle::T2, nMolecule::T2) where {T1, T2<:Real}
 
@@ -409,27 +426,34 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
         f[1] = dvdr(x[1])
     end
 
-    """
-        function forceSingleMol(f::AbstractVector{T}, x::AbstractVector{T},
-        cache::AbstractMatrix{T}) where T<:Real
+    itp = false
+    if itp
+        v, mu = getPES()
+        @inline function uTotal(x::AbstractVector{T}) where T <: AbstractFloat
+            return -v(x[1]) - kPho * (couple*mu(x[1]) + x[2])^2
+        end
+        cache = GradientCache(zeros(2), zeros(2))
+        forceSingleMol! = (f, x) -> finite_difference_gradient!(f, uTotal, x, cache)
+    else
+        """
+            function forceSingleMol(f::AbstractVector{T}, x::AbstractVector{T},
+            cache::AbstractMatrix{T}) where T<:Real
 
-    Compute force for one single molecule and one photon.
-    Cache is dummy, since I can't get the code disptached for now.
-    """
-    function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T}
-        ) where T<:Real
+        Compute force for one single molecule and one photon.
+        Cache is dummy, since I can't get the code disptached for now.
+        """
+        function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T}
+            ) where T<:Real
 
-        interaction = (couple * dipole(x[1]) + x[2])
-        f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
-        f[2] = kPho2 * interaction
+            interaction = (couple * dipole(x[1]) + x[2])
+            f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
+            f[2] = kPho2 * interaction
+        end
     end
+
 
     function pot(x::AbstractVector{T}) where {T<:Real}
         return pes(x[1]) + kPho * (couple * dipole(x[1]) + x[2])^2
-    end
-
-    function energy(x::AbstractVector{T}, v::AbstractVector{T}) where {T<:Real}
-        return 918.0v[1]^2 + 0.5v[2]^2 + pot(x)
     end
 
     """

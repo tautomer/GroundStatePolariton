@@ -100,7 +100,7 @@ function computeKappa(input::InputValues)
     # # end
     corr.normalize!(fs, fs0)
 
-    return printKappa(fs, flnmID, param.Δt, flag="disordered")
+    return printKappa(fs, flnmID, param.Δt, flag="new_system")
 end
 
 function reactiveEnergy(p::Dynamics.FullSystemParticle)
