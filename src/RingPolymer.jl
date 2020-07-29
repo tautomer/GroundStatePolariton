@@ -69,10 +69,11 @@ function ringNormalMode(nb::Integer)
     # get inverse normal mode transformation matrix
     tnmi = eigvecs(m)
     # `DEPEV` can give wrong phase
+    # it doesn't seem to mess anything up, but I'm going to fix it anyway
     if tnmi[1, 1] < 0
         tnmi .*= -1.0
     end
-    # forward NM transformation matrix
+    # transpose to get the forward NM transformation matrix
     tnm = tnmi'
     return ωₖ, tnm, tnmi
 end

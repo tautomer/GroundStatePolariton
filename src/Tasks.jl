@@ -28,7 +28,7 @@ end
 function computeKappa(input::InputValues)
 
     @unpack np, ntraj, nstep, = input
-    rng, param, mol, bath, forceEval!, cache, flnmID = initialize(np,
+    rng, param, mol, bath, forceEval!, cache, flnmID = initialize(np, 1,
         input.temp, input.ωc, input.χ, dynamics=input.dynamics,
         model=input.model, alignment=input.alignment)
     
@@ -68,16 +68,16 @@ function computeKappa(input::InputValues)
             alignment)
         Dynamics.copyArrays!(mol, bath, savedArrays)
         Dynamics.velocitySampling!(mol, bath, rng)
-        v0 = mol.v[1] 
         # println(t0, v0)
         # e[1] += reactiveEnergy(mol)
         # println(output, "# ", v0)
+        v0 = mol.v[1]
         fs0 = corr.fluxSide(fs0, v0, v0)
         @inbounds for j in 1:nstep
             Dynamics.velocityVerlet!(mol, bath, param, rng, forceEval!, cache,
                 alignment)
             q[j] = mol.x[1]
-            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3])
+            # println(output, j, " ", mol.x[1], " ", mol.x[2])
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[end])
             # println(output, j, " ", mean(@view mol.x[2:end-1]))
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", 918.0 * mol.v[1]^2)

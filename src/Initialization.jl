@@ -33,7 +33,7 @@ const gamma = eta / amu2au / 5.0
 Initialize most of the values, parameters and structs for the dynamics.
 """
 # TODO better and more flexible way to handle input values
-function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
+function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
     dynamics::Symbol=:langevin, model::Symbol=:normalModes,
     alignment::Symbol=:ordered) where {T1<:Integer, T2<:Real}
 
@@ -63,7 +63,7 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
     # println("+: ", λ₊^2 * nMolecule * μeq * dμ0 / sqrt(amu2au) / ω₊, " ", ω₊)
     # println("-: ", λ₋^2 * nMolecule * μeq * dμ0 / sqrt(amu2au) / ω₋, " ", ω₋)
 
-    rng = Random.seed!(1233+Threads.threadid())
+    rng = Random.seed!(1234)
     if alignment == :ordered
         angles = ones(nMolecule)
         sumCosθ = convert(Float64, nMolecule)
@@ -97,9 +97,10 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
 
     # angles for the dipole moment
     param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
-        nBathTotal, 1, 1, 1)
-    mol = Dynamics.FullSystemParticle(nMolecule, label, mass, sqrt.(temp./mass),
-        x0, similar(mass), param.Δt./(2*mass), similar(mass), angles)
+        nBathTotal, nb, 1, nb)
+    σv = sqrt.(temp * nb ./ mass)
+    mol = Dynamics.FullSystemParticle(nMolecule, label, mass, σv, x0,
+        similar(mass), param.Δt./(2*mass), similar(mass), angles)
     # obatin the gradient of the corresponding potential
     forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
     return rng, param, mol, bath, forceEvaluation!, cache, flnmID

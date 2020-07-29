@@ -76,12 +76,12 @@ function testPMF()
 end
 
 function resonance(η::Float64, np::Integer)
-    wc = [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.04, 0.08, 0.12, 0.16, 0.2, 0.4,
-        0.6, 0.8, 1.0, 3.0, 5.0]
-    # wc = [0.0005, 0.001, 0.005, 0.01, 0.04, 0.08, 0.12, 0.16, 0.2, 0.4, 0.6,
-    #     0.8, 1.0]
+    wc = [0.0001, 0.0005, 0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.032,
+        0.04, 0.06, 0.08, 0.12, 0.16, 0.2, 0.4, 0.6, 0.8, 1.0, 3.0, 5.0]
+    # wc = [0.0025, 0.0075, 0.025]
+    # wc = [0.0001, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
     kappa = similar(wc)
-    input = InputValues(np, 1, 1, 300.0, wc[1], 0.05*wc[1], :langevin,
+    input = InputValues(np, 1, 1, 300.0, wc[1], η*wc[1], :langevin,
         :fullSystem, :ordered) 
     # dir = "scaneta"
     dir = string(η, "_", np-1, "")
@@ -90,21 +90,45 @@ function resonance(η::Float64, np::Integer)
     end
     cd(dir)
     computeKappa(input)
-    input.nstep = 10000
-    input.ntraj = 3000
+    input.nstep = 2000
+    input.ntraj = 100000
     Threads.@threads for i in eachindex(wc)
-        χ = eta * wc[i]
+        χ = η * wc[i]
         if length("$χ") >= 10
             χ -= eps(χ)
         end
         input.ωc = wc[i]
-        input.ωc = eta
+        # input.ωc = η
         input.χ = χ
         fs = computeKappa(input)
         @views kappa[i] = mean(fs[end-50:end])
     end
-    writedlm("kappa", [wc kappa])
+    writedlm("kappa_new", [wc kappa])
 end
 
-resonance(0.5, 2)
+function scaneta(wc::Float64, np::Integer)
+    eta = [0.0001, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+    kappa = similar(eta)
+    input = InputValues(np, 1, 1, 300.0, wc, eta[1]*wc, :langevin,
+        :fullSystem, :ordered) 
+    # dir = "scaneta"
+    dir = string("wc_", wc, "_", np-1, "")
+    if ! isdir(dir)
+        mkdir(dir)
+    end
+    cd(dir)
+    computeKappa(input)
+    input.nstep = 2000
+    input.ntraj = 100000
+    Threads.@threads for i in eachindex(eta)
+        χ = wc * eta[i]
+        input.χ = χ
+        fs = computeKappa(input)
+        @views kappa[i] = mean(fs[end-50:end])
+    end
+    writedlm("kappa", [eta/sqrt(amu2au) kappa])
+end
+
+# resonance(1.0, 2)
+scaneta(0.17035428, 2)
 # testKappa()

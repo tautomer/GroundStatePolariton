@@ -50,6 +50,21 @@ mutable struct FullSystemParticle <: Particles1D
     cosθ::Vector{Float64}
 end
 
+mutable struct RPMDParticle <: ParticlesND
+    n::Int32
+    nb::Int16
+    label::Vector{String}
+    m::Vector{Float64}
+    σ::Vector{Float64}
+    x::Matrix{Float64}
+    xnm::Matrix{Float64}
+    f::Matrix{Float64}
+    dtby2::Float64
+    v::Matrix{Float64}
+    vnm::Matrix{Float64}
+    cosθ::Vector{Float64}
+end
+
 mutable struct ClassicalBathMode <: Bath1D
     n::Int16
     m::Float64
