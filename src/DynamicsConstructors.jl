@@ -1,15 +1,20 @@
-using StaticArrays
+module DynamicsConstructors
+using StaticArrays, ExportAll
 
 abstract type Particles end
 abstract type DynamicsParameters end
 abstract type Bath end
 abstract type Langevin end
 abstract type Cache end
-abstract type Particles1D <: Particles end
-abstract type ParticlesND <: Particles end
-abstract type Bath1D <: Particles1D end
+abstract type Particles1D<:Particles end
+abstract type ParticlesND<:Particles end
+abstract type Bath1D<:Particles1D end
 
-struct Parameters <: DynamicsParameters
+const cnstr = Val{:cnstr}
+const uncnstr = Val{:uncnstr}
+const Control = Union{cnstr, uncnstr}
+
+struct Parameters<:DynamicsParameters
     temperature::Float64
     Δt::Float64
     z::Float64
@@ -22,12 +27,12 @@ struct Parameters <: DynamicsParameters
     beadBath::Int16
 end
 
-struct ReducedModelParameters <: DynamicsParameters
+struct ReducedModelParameters<:DynamicsParameters
     temperature::Float64
     Δt::Float64
     nMol::Int32
 end
-mutable struct ReducedModelParticle <: Particles1D
+mutable struct ReducedModelParticle<:Particles1D
     label::Vector{String}
     σ::Float64
     dtby2m::Float64
@@ -38,7 +43,7 @@ mutable struct ReducedModelParticle <: Particles1D
     sumCosθ::Float64
 end
 
-mutable struct FullSystemParticle <: Particles1D
+mutable struct FullSystemParticle<:Particles1D
     n::Int32
     label::Vector{String}
     m::Vector{Float64}
@@ -50,7 +55,7 @@ mutable struct FullSystemParticle <: Particles1D
     cosθ::Vector{Float64}
 end
 
-mutable struct RPMDParticle <: ParticlesND
+mutable struct RPMDParticle<:ParticlesND
     n::Int32
     nb::Int16
     label::Vector{String}
@@ -59,13 +64,16 @@ mutable struct RPMDParticle <: ParticlesND
     x::Matrix{Float64}
     xnm::Matrix{Float64}
     f::Matrix{Float64}
-    dtby2::Float64
+    dtby2m::Float64
     v::Matrix{Float64}
     vnm::Matrix{Float64}
     cosθ::Vector{Float64}
+    tnm::VecOrMat{Float64}
+    tnmi::VecOrMat{Float64}
+    freerp::VecOrMat{Float64}
 end
 
-mutable struct ClassicalBathMode <: Bath1D
+mutable struct ClassicalBathMode<:Bath1D
     n::Int16
     m::Float64
     σ::Float64
@@ -79,7 +87,7 @@ mutable struct ClassicalBathMode <: Bath1D
     v::Vector{Float64}
 end
 
-mutable struct LangevinFull <: Langevin
+mutable struct LangevinFull<:Langevin
     γ::Float64
     σ::Float64
     halfΔt2γ::Float64
@@ -90,7 +98,7 @@ mutable struct LangevinFull <: Langevin
     v::Vector{Float64}
 end
 
-mutable struct LangevinModes <: Langevin
+mutable struct LangevinModes<:Langevin
     γ::Float64
     σ::Float64
     halfΔt2γ::Float64
@@ -101,14 +109,17 @@ mutable struct LangevinModes <: Langevin
     v::Vector{Float64}
 end
 
-mutable struct LangevinCache <: Cache
+mutable struct LangevinCache<:Cache
     ran1::Vector{Float64}
     ran2::Vector{Float64}
     cacheMol1::Vector{Float64}
     cacheMol2::Vector{Float64}
 end
 
-mutable struct SystemBathCache <: Cache
+mutable struct SystemBathCache<:Cache
     cacheMol1::Vector{Float64}
     cacheBath::Vector{Float64}
+end
+
+@exportAll
 end

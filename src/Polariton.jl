@@ -14,7 +14,7 @@ function temperatureDependency()
     omegac = [0.16]
     # chi = [0.001, 0.01, 0.05, 0.1, 0.2, 0.3]
     # iter = vcat([(0.16, 0.16i) for i in chi])
-    # iter = reduce(vcat, [[(i,0.1i), (i,0.3i)] for i in omegac])
+    # # iter = reduce(vcat, [[(i,0.1i), (i,0.3i)] for i in omegac])
     iter = [(0.16, 0.0)]
     cd("tmp")
     computeKappa(2, 300.0, 1, 1, omegac[1], omegac[1])
@@ -44,27 +44,21 @@ function temperatureDependency()
 end
 
 # temperatureDependency()
-dir = "test"
-if ! isdir(dir)
-    mkdir(dir)
-end
-cd(dir)
+# dir = "test"
+# if ! isdir(dir)
+#     mkdir(dir)
+# end
+# cd(dir)
 using Profile
-function testKappa()
-    if length(ARGS) != 0
-        np = parse(Int64, ARGS[1])
-        wc = parse(Float64, ARGS[2])
-    else
-        np = 2
-        wc = 0.17
-    end
-    chi = 0.5 * wc # / sqrt(np)
-    input = InputValues(np, 1, 1, 300.0, wc, chi, :langevin, :fullSystem,
-    # input = InputValues(np, 1, 1, 300.0, wc, chi, :langevin, :normalModes,
+function testKappa(wc, eta)
+    cd("energy")
+    chi = eta * wc
+    # input = InputValues(2, 10, 5000, 300.0, wc, chi, :langevin, :fullSystem,
+    input = InputValues(2, 48, 1, 1, 300.0, wc, chi, :systemBath, :fullSystem,
         :ordered) 
     @time computeKappa(input)
     input.ntraj = 1000
-    input.nstep = 2000
+    input.nstep = 1000
     Profile.clear_malloc_data()
     @time computeKappa(input)
 end
@@ -73,6 +67,18 @@ function testPMF()
     @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)
     Profile.clear_malloc_data()
     @time umbrellaSampling(300.0, 100, 10000000, 0.15, [-3.5, 3.5], 0.16, 0.0)
+end
+
+function computeΔΔG(kappaFile::String, temp::Real)
+    β = au2kelvin / temp
+    data = readdlm(kappaFile) 
+    dG = @view data[:, 2]
+    @. dG = -1.0 / β * log(2pi * β * dG)
+    for i in 2:length(dG)
+        dG[i] -= dG[1]
+    end
+    dG[1] = 0.0
+    writedlm("data/ddg.txt", data)
 end
 
 function resonance(η::Float64, np::Integer)
@@ -84,14 +90,14 @@ function resonance(η::Float64, np::Integer)
     input = InputValues(np, 1, 1, 300.0, wc[1], η*wc[1], :langevin,
         :fullSystem, :ordered) 
     # dir = "scaneta"
-    dir = string(η, "_", np-1, "")
+    dir = string(η, "_", np-1, "_no_dse")
     if ! isdir(dir)
         mkdir(dir)
     end
     cd(dir)
     computeKappa(input)
     input.nstep = 2000
-    input.ntraj = 100000
+    input.ntraj = 10000
     Threads.@threads for i in eachindex(wc)
         χ = η * wc[i]
         if length("$χ") >= 10
@@ -129,6 +135,7 @@ function scaneta(wc::Float64, np::Integer)
     writedlm("kappa", [eta/sqrt(amu2au) kappa])
 end
 
-# resonance(1.0, 2)
-scaneta(0.17035428, 2)
-# testKappa()
+# resonance(0.01, 2)
+# scaneta(0.1706, 2)
+# computeΔΔG("data/eta_scan.txt", 300.0)
+testKappa(1.0, 1.0)

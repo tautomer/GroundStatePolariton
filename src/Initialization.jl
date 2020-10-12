@@ -3,7 +3,13 @@ using Random
 using LinearAlgebra: dot
 using Interpolations: LinearInterpolation, Line
 using FiniteDiff: finite_difference_gradient!, GradientCache
-include("RingPolymer.jl")
+push!(LOAD_PATH, pwd())
+if isdefined(@__MODULE__,:LanguageServer)
+    include("./RingPolymer.jl")
+    using ..RingPolymer
+else
+    using RingPolymer
+end
 
 # Fourier series fitted parameters
 # dipole
@@ -24,7 +30,7 @@ const μeq = 1.2197912355997298
 const dμ0 = -2.0984725146374075
 const dμeq = 0.2253318892690798
 const freqCutoff = 500.0 / au2wn
-const eta = 4.0 * amu2au * freqCutoff
+const eta = 2.5 * amu2au * freqCutoff
 const gamma = eta / amu2au / 5.0
 
 """
@@ -54,7 +60,7 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
     nBathTotal = nMolecule * nBath
 
     # the suffix for all output file names to identify the setup and avoid overwritting
-    flnmID = string(ωc, "_", chi, "_", temp, "_", nMolecule)
+    flnmID = string(ωc, "_", chi, "_", temp, "_", nb)
     # convert values to au, so we can keep more human-friendly values outside
     ωc /= au2ev
     chi /= au2ev
@@ -73,16 +79,26 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
         sumCosθ = sum(angles)
     end
     # array to store equilibrated molecule and photon coordinates for the next trajectory
-    x0 = repeat([xeq], nParticle)
-    x0[1] = 0.0
     if nMolecule > 1
-        x0[end] = couple * -μeq * (sumCosθ-1)
+        # x0[end] = couple * -μeq * (sumCosθ-1)
+        qPhoton = couple * -μeq * (sumCosθ-1)
     else
-        x0[end] = 0.0
+        qPhoton = 0.0
     end
 
-    if dynamics == :SystemBath
-        bath, cache = buildBath(nBath, nMolecule, x0, temp, dt)
+    if nb == 1
+        x0 = repeat([xeq], nParticle)
+        x0[1] = 0.0
+        x0[end] = qPhoton
+    else
+        tmp = (rand(nb) .- 0.5) ./ sqrt(temp)
+        x0 = repeat(tmp, 1, nParticle) ./ sqrt(amu2au)
+        @views x0[:, 2:nMolecule] .+= xeq
+        @views x0[:, end] = tmp
+    end
+
+    if dynamics == :systemBath
+        bath, cache = buildBath(nBath, nMolecule, nb, x0, temp, dt)
     else
         # for Langevin dynamics
         bath, cache = langevinParameters(nMolecule, temp, dt, model, mass)
@@ -97,13 +113,21 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
 
     # angles for the dipole moment
     param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
-        nBathTotal, nb, 1, nb)
-    σv = sqrt.(temp * nb ./ mass)
-    mol = Dynamics.FullSystemParticle(nMolecule, label, mass, σv, x0,
-        similar(mass), param.Δt./(2*mass), similar(mass), angles)
+        nBathTotal, nb, nb, nb)
+    if nb == 1
+        σv = sqrt.(temp ./ mass)
+        mol = Dynamics.FullSystemParticle(nMolecule, label, mass, σv, x0,
+            similar(mass), param.Δt./(2*mass), similar(mass), angles)
+    else
+        rpmd = ringPolymerSetup(nb, dt, temp)
+        σv = sqrt.(temp * nb .* mass)
+        mol = Dynamics.RPMDParticle(nMolecule, nb, label, mass, σv, x0,
+            similar(x0), similar(x0), param.Δt/2, similar(x0), similar(x0),
+            angles, rpmd.tnm, rpmd.tnmi, rpmd.freerp)
+    end
     # obatin the gradient of the corresponding potential
-    forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
-    return rng, param, mol, bath, forceEvaluation!, cache, flnmID
+    forceEvaluation!, pot = constructForce(ωc, chi, nParticle, nMolecule)
+    return rng, param, mol, bath, forceEvaluation!, pot, cache, flnmID
 end
 
 """
@@ -218,8 +242,8 @@ function computeModesFreq(ωc::T, sumαi::T) where T<:Real
     return ω₊2, ω₋2, Θ
 end
 
-function buildBath(nBath::T1, nMolecule::T1, x0::AbstractVector{T2}, temp::T2,
-    dt::T2) where {T1<:Integer, T2<:Real}
+function buildBath(nBath::T1, nMolecule::T1, nb::T1, x0::AbstractArray{T2}, 
+    temp::T2, dt::T2) where {T1<:Integer, T2<:Real}
     # compute coefficients for bath modes
     ω, mω2, c, c_mω2 = computeBathParameters(nBath)
     # array to store equilibrated bath coordinates for the next trajectory
@@ -229,14 +253,21 @@ function buildBath(nBath::T1, nMolecule::T1, x0::AbstractVector{T2}, temp::T2,
     for i in eachindex(1:nMolecule)
         @inbounds @simd for j in eachindex(1:nBath)
             index += 1
-            xb0[index] = x0[i] * c_mω2[j]
+            ix = (i-1) * nb + 1
+            xb0[index] = x0[ix] * c_mω2[j]
         end
     end
     bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
         ω, c, mω2, c_mω2, xb0, similar(xb0), dt/(2*amu2au), similar(xb0))
     # pre-allocated array to avoid allocations for force evaluation
-    cache = Dynamics.SystemBathCache(Vector{Float64}(undef, nMolecule),
-        similar(xb0))
+    if nb == 1
+        # FIXME: nMol + 1
+        cache = Dynamics.SystemBathCache(Vector{Float64}(undef, nMolecule),
+            similar(xb0))
+    else
+        cache = Dynamics.SystemBathCache(Vector{Float64}(undef, nb),
+            similar(xb0))
+    end
     return bath, cache
 end
 
@@ -263,7 +294,7 @@ not be very meaningful for now. Keep for future.
 function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2,
     model::Symbol) where {T1<:Integer, T2<:Real}
 
-    if nParticle != nMolecule && chi != 0.0
+    if nParticle != nMolecule # && chi != 0.0
         # χ != 0 
         if nParticle - nMolecule > 1
             println("Multi-modes not supported currently. Reduce to single-mode.")
@@ -430,7 +461,7 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
     itp = false
     if itp
         v, mu = getPES()
-        @inline function uTotal(x::AbstractVector{T}) where T <: AbstractFloat
+        @inline function uTotal(x::AbstractVector{T}) where T<:AbstractFloat
             return -v(x[1]) - kPho * (couple*mu(x[1]) + x[2])^2
         end
         cache = GradientCache(zeros(2), zeros(2))
@@ -449,6 +480,8 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
             interaction = (couple * dipole(x[1]) + x[2])
             f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
             f[2] = kPho2 * interaction
+            # f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * x[2]
+            # f[2] = kPho2 * couple * dipole(x[1])
         end
     end
 
@@ -499,7 +532,7 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
     else
         if nMolecule == 1
             # single-molecule and single photon
-            return forceSingleMol!
+            return forceSingleMol!, pot
         else
             # multi-molecules and single photon
             return forceMultiMol!
