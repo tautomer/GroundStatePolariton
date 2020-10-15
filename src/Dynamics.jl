@@ -13,7 +13,7 @@ end
 
 const order = Val{:ordered}
 const disorder = Val{:disordered}
-const align = Union{order, disorder}
+const Align = Union{order, disorder}
 
 function copyArrays!(p::Particles, b::Bath1D, saved::Tuple) 
     copy!(saved[1], p.x)
@@ -177,7 +177,7 @@ end
 
 function velocityVerlet!(p::ReducedModelParticle, lgv::LangevinModes, 
     param::ReducedModelParameters, rng::AbstractRNG, ∇u!::Function, cache::T,
-    alignment::align, ::Val{:cnstr}) where T<:Cache
+    alignment::Align, ::Val{:cnstr}) where T<:Cache
 
     # obatin all three random numbers at once
     Random.randn!(rng, cache.ran2)
@@ -204,7 +204,7 @@ end
 
 function velocityVerlet!(p::ReducedModelParticle, lgv::LangevinModes, 
     param::ReducedModelParameters, rng::AbstractRNG, ∇u!::Function, cache::T,
-    alignment::align) where T<:Cache
+    alignment::Align) where T<:Cache
 
     # obatin all three random numbers at once
     Random.randn!(rng, cache.ran1)
@@ -229,7 +229,7 @@ end
 
 function velocityVerlet!(p::FullSystemParticle, lgv::LangevinFull,
     param::Parameters, rng::AbstractRNG, ∇u!::Function, cache::T,
-    alignment::align) where T<:Cache
+    alignment::Align) where T<:Cache
 
     # obatin all three random numbers at once
     Random.randn!(rng, cache.ran2)
@@ -255,7 +255,7 @@ end
 
 function velocityVerlet!(p::FullSystemParticle, lgv::LangevinFull,
     param::Parameters, rng::AbstractRNG, ∇u!::Function, cache::T,
-    alignment::align) where T<:Cache
+    alignment::Align) where T<:Cache
 
     # obatin all three random numbers at once
     Random.randn!(rng, cache.ran1)
@@ -280,7 +280,7 @@ end
 
 function velocityVerlet!(p::FullSystemParticle, lgv::LangevinFull,
     param::Parameters, rng::AbstractRNG, ∇u!::Function, cache::T,
-    alignment::align, ::Val{:cnstr}) where T<:Cache
+    alignment::Align, ::Val{:cnstr}) where T<:Cache
 
     # obatin all three random numbers at once
     Random.randn!(rng, cache.ran2)
@@ -311,16 +311,16 @@ function velocityVerlet!(p::FullSystemParticle, lgv::LangevinFull,
 end
 
 function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
-    ∇u!::Function, alignment::align, ctrl::Control=Val(:uncnstr))
+    ∇u!::Function, alignment::Align, ctrl::Control=Val(:uncnstr))
 
     velocityUpdate!(p, b)
     positionUpdate!(p, b, param, ctrl)
-    force!(p, b, ∇u!, alignment)
+    force!(p, b, ∇u!, alignment, ctrl)
     velocityUpdate!(p, b)
 end
 
 function positionUpdate!(p::Particles1D, b::Bath1D, param::Parameters,
-    ::uncnstr)
+    ctrl::Union{uncnstr, restr})
     @. p.x += p.v * param.Δt
     @. b.x += b.v * param.Δt
 end
@@ -331,28 +331,8 @@ function positionUpdate!(p::Particles1D, b::Bath1D, param::Parameters,
     p.x[1] = 0.0
 end
 
-function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
-    ∇u!::Function, alignment::align)
-
-    velocityUpdate!(p, b)
-    @. p.x += p.v * param.Δt
-    @. b.x += b.v * param.Δt
-    force!(p, b, ∇u!, alignment)
-    velocityUpdate!(p, b)
-end
-
-function velocityVerlet!(p::Particles1D, b::Bath1D, param::Parameters,
-    ∇u!::Function, ks::T, x0::T) where T<:AbstractFloat
-
-    velocityUpdate!(p, b)
-    @. p.x += p.v * param.Δt
-    @. b.x += b.v * param.Δt
-    force!(p, b, ∇u!, ks, x0)
-    velocityUpdate!(p, b)
-end
-
 function velocityVerlet!(p::RPMDParticle, b::Bath1D, param::Parameters,
-    ∇u!::Function, alignment::align, ctrl::Control=Val(:uncnstr))
+    ∇u!::Function, alignment::Align, ctrl::Control=Val(:uncnstr))
 
     velocityUpdate!(p, b)
     normalModeTransformation!(p.x, p.v, p.xnm, p.vnm, p.tnm)
@@ -376,22 +356,6 @@ function forceBath!(nm::T1, fs::T2, x::T2, b::Bath1D) where {T1<:
     end
 end
 
-function force!(p::Particles1D, b::Bath1D, ∇u!::Function, ks::T, x0::T) where
-    T<:Real
-
-    ∇u!(p.f, p.x)
-    p.f[1] -= ks * (p.x[1]-x0)
-    index = 0
-    for j in 1:p.n
-        @inbounds @simd for i in 1:b.n
-            index += 1
-            tmp = b.c_mω2[i] * p.x[j] - b.x[index]
-            b.f[index] = b.mω2[i] * tmp
-            p.f[j] -= b.c[i] * tmp
-        end
-    end
-end
-
 function force!(p::FullSystemParticle, b::Bath1D, ∇u!::Function, ::order)
 
     ∇u!(p.f, p.x)
@@ -404,6 +368,19 @@ function force!(p::FullSystemParticle, b::Bath1D, ∇u!::Function, ::disorder)
     ∇u!(p.f, p.x, p.cosθ)
     b.f .= 0.0
     forceBath!(p.n, p.f, p.x, b)
+end
+
+function force!(p::FullSystemParticle, b::Bath1D, ∇u!::Function,
+    alignment::Align, ::restr)
+
+    force!(p, b, ∇u!, alignment)
+    p.f[1] -= p.ks * (p.x[1] - p.xi)
+end
+
+function force!(p::FullSystemParticle, b::Bath1D, ∇u!::Function,
+    alignment::Align, ctrl::Union{uncnstr, cnstr})
+
+    force!(p, b, ∇u!, alignment)
 end
 
 function force!(p::RPMDParticle, b::Bath1D, ∇u!::Function, ::order)
@@ -430,7 +407,7 @@ function force!(p::FullSystemParticle, b::LangevinFull, ∇u!::Function,
 end
 
 function force!(p::ReducedModelParticle, b::LangevinModes, ∇u!::Function,
-    ::align)
+    ::Align)
 
     ∇u!(p.f, p.x, p.sumCosθ)
 end
@@ -444,10 +421,11 @@ to maintain a NVE ensemble. The first molecule is constrained on the top of the
 barrier.
 """
 function equilibration!(p::Particles, b::Bath1D, nst::Int64, rng::AbstractRNG,
-    param::Parameters, ∇u!::Function, cache::SystemBathCache, alignment::align)
+    param::Parameters, ∇u!::Function, cache::SystemBathCache, alignment::Align,
+    ctrl::Control)
 
     @inbounds for j in 1:nst
-        velocityVerlet!(p, b, param, ∇u!, alignment, Val(:cnstr))
+        velocityVerlet!(p, b, param, ∇u!, alignment, ctrl)
         if j % param.τ == 0
             andersen!(p, b, param.z, rng, cache)
         end
@@ -462,10 +440,11 @@ Equilibrate the particles with Langevin dynamics. The first molecule is
 constrained on the top of the barrier.
 """
 function equilibration!(p::Particles1D, b::Langevin, nst::Int64, rng::AbstractRNG,
-    param::DynamicsParameters, ∇u!::Function, cache::LangevinCache, alignment::align)
+    param::DynamicsParameters, ∇u!::Function, cache::LangevinCache,
+    alignment::Align, ctrl::Control)
 
     @inbounds for j in 1:nst
-        velocityVerlet!(p, b, param, rng, ∇u!, cache, alignment, Val(:cnstr))
+        velocityVerlet!(p, b, param, rng, ∇u!, cache, alignment, ctrl)
     end
 end
 

@@ -40,7 +40,7 @@ Initialize most of the values, parameters and structs for the dynamics.
 """
 # TODO better and more flexible way to handle input values
 function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
-    dynamics::Symbol=:langevin, model::Symbol=:normalModes,
+    ks::T2 = 0.0, dynamics::Symbol=:langevin, model::Symbol=:normalModes,
     alignment::Symbol=:ordered) where {T1<:Integer, T2<:Real}
 
     nPhoton = 1
@@ -113,16 +113,16 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
 
     # angles for the dipole moment
     param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
-        nBathTotal, nb, nb, nb)
+        nBathTotal, nb, nb, 1)
     if nb == 1
         σv = sqrt.(temp ./ mass)
-        mol = Dynamics.FullSystemParticle(nMolecule, label, mass, σv, x0,
-            similar(mass), param.Δt./(2*mass), similar(mass), angles)
+        mol = Dynamics.FullSystemParticle(nMolecule, label, mass, σv, x0, ks,
+            0.0, similar(mass), param.Δt./(2*mass), similar(mass), angles)
     else
         rpmd = ringPolymerSetup(nb, dt, temp)
         σv = sqrt.(temp * nb .* mass)
-        mol = Dynamics.RPMDParticle(nMolecule, nb, label, mass, σv, x0,
-            similar(x0), similar(x0), param.Δt/2, similar(x0), similar(x0),
+        mol = Dynamics.RPMDParticle(nMolecule, nb, label, mass, σv, x0, ks,
+            0.0, similar(x0), similar(x0), param.Δt/2, similar(x0), similar(x0),
             angles, rpmd.tnm, rpmd.tnmi, rpmd.freerp)
     end
     # obatin the gradient of the corresponding potential

@@ -167,6 +167,15 @@ function ringPolymerEvolution!(p::RPMDParticle, ::cnstr)
     p.xnm[1, 1] = 0.0
 end
 
+function ringPolymerEvolution!(p::RPMDParticle, ::restr) 
+
+    # ks here is in fact ks * dt / 2
+    # and xi is xi * √N
+    p.vnm[1, 1] -= p.ks * (p.xnm[1, 1] - p.xi)
+    ringPolymerEvolution!(p, Val(:uncnstr))
+    p.vnm[1, 1] -= p.ks * (p.xnm[1, 1] - p.xi)
+end
+
 function beadUpdate(x::T, p::T, m::T, mono::AbstractVector{T}) where T<:Real
 
     newv = mono[1] * p + mono[2] * x * m

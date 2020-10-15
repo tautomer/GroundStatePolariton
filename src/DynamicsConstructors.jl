@@ -12,7 +12,8 @@ abstract type Bath1D<:Particles1D end
 
 const cnstr = Val{:cnstr}
 const uncnstr = Val{:uncnstr}
-const Control = Union{cnstr, uncnstr}
+const restr = Val{:restr}
+const Control = Union{cnstr, uncnstr, restr}
 
 struct Parameters<:DynamicsParameters
     temperature::Float64
@@ -49,6 +50,8 @@ mutable struct FullSystemParticle<:Particles1D
     m::Vector{Float64}
     σ::Vector{Float64}
     x::Vector{Float64}
+    ks::Float64
+    xi::Float64
     f::Vector{Float64}
     dtby2m::Vector{Float64}
     v::Vector{Float64}
@@ -62,6 +65,8 @@ mutable struct RPMDParticle<:ParticlesND
     m::Vector{Float64}
     σ::Vector{Float64}
     x::Matrix{Float64}
+    ks::Float64
+    xi::Float64
     xnm::Matrix{Float64}
     f::Matrix{Float64}
     dtby2m::Float64

@@ -54,7 +54,7 @@ function testKappa(wc, eta)
     cd("energy")
     chi = eta * wc
     # input = InputValues(2, 10, 5000, 300.0, wc, chi, :langevin, :fullSystem,
-    input = InputValues(2, 48, 1, 1, 300.0, wc, chi, :systemBath, :fullSystem,
+    input = KappaInput(2, 48, 1, 1, 300.0, wc, chi, :systemBath, :fullSystem,
         :ordered) 
     @time computeKappa(input)
     input.ntraj = 1000
@@ -63,10 +63,15 @@ function testKappa(wc, eta)
     @time computeKappa(input)
 end
 
-function testPMF()
-    @time umbrellaSampling(300.0, 100, 10, 0.15, [-3.5, 3.5], 0.16, 0.0)
+function testPMF(wc::Real, chi::Real)
+    cd("energy")
+    input = UmbrellaInput(2, 1, 2, 1, 300.0, 0.15, [-3.5, 3.5], wc, chi,
+        :systemBath, :fullSystem, :ordered) 
+    @time umbrellaSampling(input)
+    input.nw = 30
+    input.nstep = convert(Int64, 1e6)
     Profile.clear_malloc_data()
-    @time umbrellaSampling(300.0, 100, 10000000, 0.15, [-3.5, 3.5], 0.16, 0.0)
+    @time umbrellaSampling(input)
 end
 
 function computeΔΔG(kappaFile::String, temp::Real)
@@ -138,4 +143,5 @@ end
 # resonance(0.01, 2)
 # scaneta(0.1706, 2)
 # computeΔΔG("data/eta_scan.txt", 300.0)
-testKappa(1.0, 1.0)
+# testKappa(1.0, 1.0)
+testPMF(1.0, 1.0)

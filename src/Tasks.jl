@@ -13,7 +13,7 @@ using ..Dynamics
 using ..CorrelationFunctions
 const corr = CorrelationFunctions
 
-@with_kw mutable struct InputValues{T1<:Integer, T2<:AbstractFloat, T3<:Symbol}
+@with_kw mutable struct KappaInput{T1<:Integer, T2<:AbstractFloat, T3<:Symbol}
     np::T1
     nb::T1
     ntraj::T1
@@ -26,7 +26,22 @@ const corr = CorrelationFunctions
     alignment::T3
 end
 
-function computeKappa(input::InputValues)
+@with_kw mutable struct UmbrellaInput{T1<:Integer, T2<:AbstractFloat, T3<:Symbol}
+    np::T1
+    nb::T1
+    nw::T1
+    nstep::T1
+    temp::T2
+    ks::T2
+    bound::Vector{T2}
+    ωc::T2
+    χ::T2
+    dynamics::T3
+    model::T3
+    alignment::T3
+end
+
+function computeKappa(input::KappaInput)
 
     @unpack np, nb, ntraj, nstep, = input
     if nb > 1 && input.dynamics == :langevin
@@ -56,7 +71,7 @@ function computeKappa(input::InputValues)
     Dynamics.velocitySampling!(mol, bath, rng)
     Dynamics.force!(mol, bath, forceEval!, alignment)
     Dynamics.equilibration!(mol, bath, 4000, rng, param, forceEval!, cache,
-        alignment)
+        alignment, Val(:cnstr))
     if input.dynamics == :langevin
         savedArrays = (copy(mol.x), copy(mol.f), copy(mol.v))
     else
@@ -75,7 +90,7 @@ function computeKappa(input::InputValues)
         end
         Dynamics.copyArrays!(savedArrays, mol, bath)
         Dynamics.equilibration!(mol, bath, 3000, rng, param, forceEval!, cache,
-            alignment)
+            alignment, Val(:cnstr))
         Dynamics.copyArrays!(mol, bath, savedArrays)
         Dynamics.velocitySampling!(mol, bath, rng)
         # copy!(vb, mol.v)
@@ -151,49 +166,49 @@ function umbrellaSetup(temp::T, nw::Integer, ks::T, bound::Vector{T}) where T<:A
     return xi
 end
 
-function umbrellaSampling(temp::T1, nw::T2, nStep::T2, ks::T1, bound::Vector{T1},
-    ωc::T1, chi::T1) where {T1<:Real, T2<:Integer}
-    nSkip = 10
-    t = temp / au2kelvin
-    nCollected = floor(Int64, nStep/nSkip)
-    xi = umbrellaSetup(t, nw, ks, bound)
-    param, mol, bath, forceEval!, cache = initialize(2, temp, freqCutoff, eta,
-        ωc, chi)
-    wham_prarm, wham_array, ui_array =  WHAM.setup(t, nw, bound, xi, ks/2.0, nBin=10*nw+1)
+function umbrellaSampling(input::UmbrellaInput)
 
-    rng = Random.seed!(114514+Threads.threadid())
-    # rng = Random.seed!()
+    @unpack np, nb, nw, nstep, ks, bound, = input
+    if nb > 1 && input.dynamics == :langevin
+        println("White-noise Langevin dynamics does not work with RPMD")
+        input.dynamics = :systemBath
+    end
+
+    nskip = 20
+    nCollected = floor(Int64, nstep/nskip)
+    temp = input.temp / au2kelvin
+    xi = umbrellaSetup(temp, nw, ks, bound)
+    rng, param, mol, bath, forceEval!, pot, cache, flnmID = initialize(np, nb,
+        input.temp, input.ωc, input.χ, ks=ks, dynamics=input.dynamics,
+        model=input.model, alignment=input.alignment)
+    wham_prarm, ui_array =  WHAM.setup(temp, nw, bound, xi, ks/2.0, nBin=10*nw+1)
+
+    if param.nMol == 1
+        alignment = Val(:ordered)
+    else
+        alignment = Val(input.alignment)
+    end
+    if param.beadMol > 1
+        xi .*= sqrt(param.nb)
+    end
     cv = Vector{Float64}(undef, nCollected)
     for i in 1:nw
         # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
-        x0 = xi[i]
-        mol.x .= -2.0
-        mol.x[1] = x0
+        mol.xi = xi[i]
+        mol.x[1] = mol.xi
         mol.x[end] = 0.0
-        Dynamics.velocitySampling!(mol, rng)
-        Dynamics.velocitySampling!(bath, rng)
-        bath.x = Random.randn(param.nBath)
-        Dynamics.force!(mol, bath, forceEval!, cache)
-        for j in 1:5000
-            Dynamics.velocityVerlet!(mol, bath, param, forceEval!, cache, ks, x0)
-            if j % 25 == 0
-                Dynamics.velocitySampling!(mol, rng)
-                Dynamics.velocitySampling!(bath, rng)
-            end
-        end
+        Dynamics.velocitySampling!(mol, bath, rng)
+        Dynamics.force!(mol, bath, forceEval!, alignment)
+        Dynamics.equilibration!(mol, bath, 9000, rng, param, forceEval!, cache,
+            alignment, Val(:restr))
         # println(output, "# ", v0)
         for j in 1:nCollected
-            for k in 1:nSkip
-                Dynamics.velocityVerlet!(mol, bath, param, forceEval!, cache, ks, x0)
-            end
+            Dynamics.equilibration!(mol, bath, nskip, rng, param, forceEval!,
+                cache, alignment, Val(:restr))
             cv[j] = mol.x[1]
-            # if j % 25 == 0
-                Dynamics.velocitySampling!(mol, rng)
-                Dynamics.velocitySampling!(bath, rng)
-            # end
             # println(j, " ", mol.v[1], " ", q[j+1], " ", 0.5*amu2au*mol.v[1]^2+pesMol(mol.x[1]))
-            # println(j, " ", mol.x[1], " ", q[j+1])
+            # println(output, j, " ", mol.x[1])
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", uTotal(mol.x[1], mol.x[2]), " ", q[j+1])
         end
         # wham_array = WHAM.biasedDistibution(cv, i, wham_prarm, wham_array)
@@ -204,14 +219,14 @@ function umbrellaSampling(temp::T1, nw::T2, nStep::T2, ks::T1, bound::Vector{T1}
 
     # xbin, pmf = @time WHAM.unbias(wham_prarm, wham_array)
     xbin, pmf = @time WHAM.integration(wham_prarm, ui_array)
-    flnm = string("pmf_", ωc, "_", chi, "_", temp, "_", param.nMol, ".txt")
+    flnm = string("pmf_", flnmID, ".txt")
     open(flnm, "w") do io
-        @printf(io, "# ω_c=%5.3f,χ=%6.4f \n", ωc, chi)
+        @printf(io, "# ω_c=%5.3f,χ=%6.4f \n", input.ωc, input.χ)
         @printf(io, "# Thread ID: %3d\n", Threads.threadid())
-        @printf(io, "# Physical temperature: %6.1f\n", temp)
+        @printf(io, "# Physical temperature: %6.1f\n", input.temp)
         @printf(io, "# Number of windows: %5d\n", nw)
         @printf(io, "# Number of bins: %5d\n", wham_prarm.nBin)
-        @printf(io, "# Number of points per window: %11d\n", nStep)
+        @printf(io, "# Number of points per window: %11d\n", nstep)
         @printf(io, "# Convergence criteria: %7.2g\n", 1e-12)
         writedlm(io, [xbin pmf])
     end
