@@ -8,7 +8,7 @@ using Statistics: mean
 Return the first element (V₀ or q) for classical simulations.
 """
 function getCentroid(a::AbstractVector{T}) where T<:Real
-    c = a[1]
+    return @views a[1]
 end
 
 """
@@ -17,7 +17,9 @@ end
 Return the average of the first column (V₀ or q) for RPMD simulations.
 """
 function getCentroid(a::AbstractMatrix{T}) where T<:Real
+    println("hdasdasa")
     @views c = mean(a[:, 1])
+    return c
 end
 
 """

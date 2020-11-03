@@ -36,9 +36,7 @@ end
     bound::Vector{T2}
     ωc::T2
     χ::T2
-    dynamics::T3
-    model::T3
-    alignment::T3
+    unbias::T3
 end
 
 function computeKappa(input::KappaInput)
@@ -78,9 +76,10 @@ function computeKappa(input::KappaInput)
         savedArrays = (copy(mol.x), copy(mol.f), copy(mol.v), copy(bath.x),
             copy(bath.f), copy(bath.v))
     end
+    skip = ntraj / 20
     @inbounds for i in 1:ntraj
-        if i % 100 == 0
-            println("Running trajcetory $i")
+        if i % skip == 0
+            println("Running trajcetory ", i)
         end
         if alignment == Val(:disordered)
             getRandomAngles!(mol.cosθ, rng)
@@ -89,7 +88,7 @@ function computeKappa(input::KappaInput)
             end
         end
         Dynamics.copyArrays!(savedArrays, mol, bath)
-        Dynamics.equilibration!(mol, bath, 3000, rng, param, forceEval!, cache,
+        Dynamics.equilibration!(mol, bath, 100, rng, param, forceEval!, cache,
             alignment, Val(:cnstr))
         Dynamics.copyArrays!(mol, bath, savedArrays)
         Dynamics.velocitySampling!(mol, bath, rng)
@@ -98,6 +97,7 @@ function computeKappa(input::KappaInput)
         # mol.x .= 0.0
         # @. mol.v = vb * (-1)^k
         v0 = corr.getCentroid(mol.v)
+        # println(mol.x[2])
         # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
         # traj = string("traj_", 2i+k-2, ".txt")
@@ -149,18 +149,21 @@ function printKappa(fs::AbstractVector{T}, flnmID::S, dt::T; flag::S=""
     return fs
 end
 
-function umbrellaSetup(temp::T, nw::Integer, ks::T, bound::Vector{T}) where T<:AbstractFloat
+function umbrellaSetup(temp::T, nw::Integer, ks::T, bound::Vector{T},
+    method::Symbol) where T<:AbstractFloat
     sort!(bound)
     Δwindow = (bound[2]-bound[1]) / nw
     σ = sqrt(temp/ks)
-    if σ < Δwindow
-        println("""Warning: the widtch of the histogram of each window is
-        estimated to be $σ, which is smaller than the window distance $Δwindow.
-        This may cause insufficient overlap between windows.
-        Possible solutions:
-        1. Use smaller force constant.
-        2. Use more windows.
-        3. Use umbrellia integration instead of WHAM for unbiasing.""")
+    if method === :WHAM
+        if σ < Δwindow
+            println("""Warning: the widtch of the histogram of each window is
+            estimated to be $σ, which is smaller than the window distance $Δwindow.
+            This may cause insufficient overlap between windows.
+            Possible solutions:
+            1. Use smaller force constant.
+            2. Use more windows.
+            3. Use umbrella integration instead of WHAM for unbiasing.""")
+        end
     end
     xi = [bound[1] + (i-0.5)*Δwindow for i in 1:nw]
     return xi
@@ -169,19 +172,16 @@ end
 function umbrellaSampling(input::UmbrellaInput)
 
     @unpack np, nb, nw, nstep, ks, bound, = input
-    if nb > 1 && input.dynamics == :langevin
-        println("White-noise Langevin dynamics does not work with RPMD")
-        input.dynamics = :systemBath
-    end
 
     nskip = 20
     nCollected = floor(Int64, nstep/nskip)
     temp = input.temp / au2kelvin
-    xi = umbrellaSetup(temp, nw, ks, bound)
+    xi = umbrellaSetup(temp, nw, ks, bound, input.unbias)
     rng, param, mol, bath, forceEval!, pot, cache, flnmID = initialize(np, nb,
-        input.temp, input.ωc, input.χ, ks=ks, dynamics=input.dynamics,
-        model=input.model, alignment=input.alignment)
-    wham_prarm, ui_array =  WHAM.setup(temp, nw, bound, xi, ks/2.0, nBin=10*nw+1)
+        input.temp, input.ωc, input.χ, ks=ks, dynamics=:systemBath,
+        model=:fullSystem)
+    us_param, pmf_array =  WHAM.setup(temp, nw, bound, xi, ks/2.0, nBin=10*nw+1,
+        method=input.unbias)
 
     if param.nMol == 1
         alignment = Val(:ordered)
@@ -189,43 +189,46 @@ function umbrellaSampling(input::UmbrellaInput)
         alignment = Val(input.alignment)
     end
     if param.beadMol > 1
-        xi .*= sqrt(param.nb)
+        xi .*= sqrt(param.beadMol)
     end
     cv = Vector{Float64}(undef, nCollected)
     for i in 1:nw
         # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
         mol.xi = xi[i]
-        mol.x[1] = mol.xi
-        mol.x[end] = 0.0
+        @views mol.x[1:param.beadMol] .= us_param.windowCenter[i]
+        @views mol.x[end-param.beadMol+1:end] .= 0.0
         Dynamics.velocitySampling!(mol, bath, rng)
         Dynamics.force!(mol, bath, forceEval!, alignment)
         Dynamics.equilibration!(mol, bath, 9000, rng, param, forceEval!, cache,
             alignment, Val(:restr))
         # println(output, "# ", v0)
+        println("Running window number $i") 
         for j in 1:nCollected
             Dynamics.equilibration!(mol, bath, nskip, rng, param, forceEval!,
                 cache, alignment, Val(:restr))
-            cv[j] = mol.x[1]
+            cv[j] = WHAM.cv(mol.x)
             # println(j, " ", mol.v[1], " ", q[j+1], " ", 0.5*amu2au*mol.v[1]^2+pesMol(mol.x[1]))
-            # println(output, j, " ", mol.x[1])
+            # println(output, j, " ", cv[j])
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", uTotal(mol.x[1], mol.x[2]), " ", q[j+1])
         end
-        # wham_array = WHAM.biasedDistibution(cv, i, wham_prarm, wham_array)
-        println("Processing window number $i")
-        ui_array.mean[i], ui_array.var[i] = WHAM.windowStats(cv)
+        # wham_array = WHAM.biasedDistibution(cv, i, wham_param, ui_array)
+        # writedlm(output, [wham_param.binCenter ui_array.vBiased[:, i]])
+        # ui_array.mean[i], ui_array.var[i] = WHAM.windowStats(cv)
+        WHAM.biased!(pmf_array, us_param, cv, i)
         # close(output)
     end
 
-    # xbin, pmf = @time WHAM.unbias(wham_prarm, wham_array)
-    xbin, pmf = @time WHAM.integration(wham_prarm, ui_array)
+    # xbin, pmf = WHAM.unbias(wham_param, ui_array)
+    # xbin, pmf = @time WHAM.integration(wham_param, ui_array)
+    xbin, pmf = WHAM.unbias(pmf_array, us_param)
     flnm = string("pmf_", flnmID, ".txt")
     open(flnm, "w") do io
         @printf(io, "# ω_c=%5.3f,χ=%6.4f \n", input.ωc, input.χ)
         @printf(io, "# Thread ID: %3d\n", Threads.threadid())
         @printf(io, "# Physical temperature: %6.1f\n", input.temp)
         @printf(io, "# Number of windows: %5d\n", nw)
-        @printf(io, "# Number of bins: %5d\n", wham_prarm.nBin)
+        @printf(io, "# Number of bins: %5d\n", us_param.nBin)
         @printf(io, "# Number of points per window: %11d\n", nstep)
         @printf(io, "# Convergence criteria: %7.2g\n", 1e-12)
         writedlm(io, [xbin pmf])

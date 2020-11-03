@@ -53,22 +53,22 @@ using Profile
 function testKappa(wc, eta)
     cd("energy")
     chi = eta * wc
-    # input = InputValues(2, 10, 5000, 300.0, wc, chi, :langevin, :fullSystem,
-    input = KappaInput(2, 48, 1, 1, 300.0, wc, chi, :systemBath, :fullSystem,
+    input = KappaInput(2, 1, 1, 1, 300.0, wc, chi, :systemBath, :fullSystem,
+    # input = KappaInput(2, 1, 1, 1, 300.0, wc, chi, :langevin, :fullSystem,
         :ordered) 
     @time computeKappa(input)
-    input.ntraj = 1000
-    input.nstep = 1000
+    input.ntraj = 200
+    input.nstep = 2000
     Profile.clear_malloc_data()
     @time computeKappa(input)
 end
 
-function testPMF(wc::Real, chi::Real)
+function testPMF(wc::Real, chi::Real, method::Symbol)
     cd("energy")
-    input = UmbrellaInput(2, 1, 2, 1, 300.0, 0.15, [-3.5, 3.5], wc, chi,
-        :systemBath, :fullSystem, :ordered) 
+    input = UmbrellaInput(2, 32, 2, 1, 300.0, 0.12, [-3.5, 3.5], wc, chi,
+        method)
     @time umbrellaSampling(input)
-    input.nw = 30
+    input.nw = 31
     input.nstep = convert(Int64, 1e6)
     Profile.clear_malloc_data()
     @time umbrellaSampling(input)
@@ -92,17 +92,19 @@ function resonance(η::Float64, np::Integer)
     # wc = [0.0025, 0.0075, 0.025]
     # wc = [0.0001, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
     kappa = similar(wc)
-    input = InputValues(np, 1, 1, 300.0, wc[1], η*wc[1], :langevin,
-        :fullSystem, :ordered) 
+    input = KappaInput(2, 1, 1, 1, 300.0, wc[1], η*wc[1], :systemBath, :fullSystem,
+        :ordered) 
+    # input = InputValues(np, 1, 1, 300.0, wc[1], η*wc[1], :langevin,
+    #     :fullSystem, :ordered) 
     # dir = "scaneta"
-    dir = string(η, "_", np-1, "_no_dse")
+    dir = string(η, "_", np-1, "_system_bath")
     if ! isdir(dir)
         mkdir(dir)
     end
     cd(dir)
     computeKappa(input)
-    input.nstep = 2000
-    input.ntraj = 10000
+    input.nstep = 6000
+    input.ntraj = 100000
     Threads.@threads for i in eachindex(wc)
         χ = η * wc[i]
         if length("$χ") >= 10
@@ -140,8 +142,8 @@ function scaneta(wc::Float64, np::Integer)
     writedlm("kappa", [eta/sqrt(amu2au) kappa])
 end
 
-# resonance(0.01, 2)
+# resonance(4.0, 2)
 # scaneta(0.1706, 2)
 # computeΔΔG("data/eta_scan.txt", 300.0)
-# testKappa(1.0, 1.0)
-testPMF(1.0, 1.0)
+testKappa(0.001, 4.0)
+# testPMF(0.005, 0.04, :UI)

@@ -29,9 +29,10 @@ const ω0 = 0.0062736666471555754
 const μeq = 1.2197912355997298
 const dμ0 = -2.0984725146374075
 const dμeq = 0.2253318892690798
-const freqCutoff = 500.0 / au2wn
-const eta = 2.5 * amu2au * freqCutoff
-const gamma = eta / amu2au / 5.0
+const freqCutoff = 1374.0 * 5 / au2wn
+const eta = 800.0 / au2wn / 2.0 * amu2au
+# const eta = 0.5 * amu2au * freqCutoff
+const gamma = 200 / au2wn # 400 cm^-1
 
 """
     function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Integer, T2<:Real}
@@ -46,9 +47,9 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
     nPhoton = 1
     nMolecule = nParticle - nPhoton
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
-    nBath = 15
-    dt = 4.0
-    ν = 0.05
+    nBath = 80
+    dt = 1.0
+    ν = 0.1
     τ = floor(Int64, 1/ν)
     # collisionFrequency 
     z = ν * dt
@@ -121,8 +122,9 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
     else
         rpmd = ringPolymerSetup(nb, dt, temp)
         σv = sqrt.(temp * nb .* mass)
-        mol = Dynamics.RPMDParticle(nMolecule, nb, label, mass, σv, x0, ks,
-            0.0, similar(x0), similar(x0), param.Δt/2, similar(x0), similar(x0),
+        halfdt = param.Δt / 2
+        mol = Dynamics.RPMDParticle(nMolecule, nb, label, mass, σv, x0, ks*halfdt,
+            0.0, similar(x0), similar(x0), halfdt, similar(x0), similar(x0),
             angles, rpmd.tnm, rpmd.tnmi, rpmd.freerp)
     end
     # obatin the gradient of the corresponding potential
@@ -142,14 +144,18 @@ function computeBathParameters(nBath::T) where T<:Integer
     mω2 = similar(ω)
     c = similar(ω)
     c_mω2 = similar(ω)
-    tmp = sqrt(2eta * amu2au * freqCutoff / nb / pi)
+    tmp = sqrt(eta * amu2au * freqCutoff / nb)
+    # tmp = sqrt(2eta * amu2au * freqCutoff / nb / pi)
+    w0 = freqCutoff / nb * (1.0 - exp(-5))
     @inbounds @simd for i in eachindex(1:nBath)
         # bath mode frequencies
-        ω[i] = -freqCutoff * log((i-0.5) / nb)
+        # ω[i] = -freqCutoff * log((i-0.5) / nb)
+        ω[i] = -freqCutoff * log(1 - i * w0 / freqCutoff)
         # bath force constants
         mω2[i] = ω[i]^2 * amu2au
         # bath coupling strength
-        c[i] = tmp * ω[i]
+        # c[i] = tmp * ω[i]
+        c[i] = sqrt(2 * eta/pi * w0 * amu2au) * ω[i]
         # c/mω^2, for force evaluation
         c_mω2[i] = c[i] / mω2[i]
     end
