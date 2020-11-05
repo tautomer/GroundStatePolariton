@@ -65,7 +65,18 @@ end
 
 function testPMF(wc::Real, chi::Real, method::Symbol)
     cd("energy")
-    input = UmbrellaInput(2, 32, 2, 1, 300.0, 0.12, [-3.5, 3.5], wc, chi,
+    if length(ARGS) != 0
+        nb = parse(Int64, ARGS[1])
+        wc = parse(Float64, ARGS[2])
+        chi = parse(Float64, ARGS[3])
+        temp = parse(Float64, ARGS[4])
+    else
+        wc = wc
+        chi = chi
+        temp = 300.0
+        nb = 1
+    end
+    input = UmbrellaInput(2, nb, 2, 1, temp, 0.12, [-3.5, 3.5], wc, chi,
         method)
     @time umbrellaSampling(input)
     input.nw = 31
@@ -145,5 +156,5 @@ end
 # resonance(4.0, 2)
 # scaneta(0.1706, 2)
 # computeΔΔG("data/eta_scan.txt", 300.0)
-testKappa(0.001, 4.0)
-# testPMF(0.005, 0.04, :UI)
+# testKappa(0.001, 4.0)
+testPMF(0.005, 0.04, :UI)

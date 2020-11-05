@@ -200,7 +200,7 @@ function umbrellaSampling(input::UmbrellaInput)
         @views mol.x[end-param.beadMol+1:end] .= 0.0
         Dynamics.velocitySampling!(mol, bath, rng)
         Dynamics.force!(mol, bath, forceEval!, alignment)
-        Dynamics.equilibration!(mol, bath, 9000, rng, param, forceEval!, cache,
+        Dynamics.equilibration!(mol, bath, 10000, rng, param, forceEval!, cache,
             alignment, Val(:restr))
         # println(output, "# ", v0)
         println("Running window number $i") 

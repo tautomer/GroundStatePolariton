@@ -29,7 +29,7 @@ const ω0 = 0.0062736666471555754
 const μeq = 1.2197912355997298
 const dμ0 = -2.0984725146374075
 const dμeq = 0.2253318892690798
-const freqCutoff = 1374.0 * 5 / au2wn
+const freqCutoff = 1374.0 / au2wn
 const eta = 800.0 / au2wn / 2.0 * amu2au
 # const eta = 0.5 * amu2au * freqCutoff
 const gamma = 200 / au2wn # 400 cm^-1
@@ -47,8 +47,8 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
     nPhoton = 1
     nMolecule = nParticle - nPhoton
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
-    nBath = 80
-    dt = 1.0
+    nBath = 40
+    dt = 4.0
     ν = 0.1
     τ = floor(Int64, 1/ν)
     # collisionFrequency 
@@ -146,7 +146,7 @@ function computeBathParameters(nBath::T) where T<:Integer
     c_mω2 = similar(ω)
     tmp = sqrt(eta * amu2au * freqCutoff / nb)
     # tmp = sqrt(2eta * amu2au * freqCutoff / nb / pi)
-    w0 = freqCutoff / nb * (1.0 - exp(-5))
+    w0 = freqCutoff / nb * (1.0 - exp(-3.0))
     @inbounds @simd for i in eachindex(1:nBath)
         # bath mode frequencies
         # ω[i] = -freqCutoff * log((i-0.5) / nb)
