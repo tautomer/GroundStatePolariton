@@ -1,6 +1,15 @@
 using Constants
 using Random
 using LinearAlgebra: dot
+using Interpolations: LinearInterpolation, Line
+using FiniteDiff: finite_difference_gradient!, GradientCache
+push!(LOAD_PATH, pwd())
+if isdefined(@__MODULE__,:LanguageServer)
+    include("./RingPolymer.jl")
+    using ..RingPolymer
+else
+    using RingPolymer
+end
 
 # Fourier series fitted parameters
 # dipole
@@ -14,15 +23,19 @@ const pesCoeff = [0.4480425396401699 0.8960850792803398 1.3441276189205096 1.792
     -19.07993156151155 14.132538112430545 -8.669598196769785 4.440544955027029 -1.841789733545533 0.5938508511955884 -0.13456854929031054 0.017221210502076565;
     -8.548620992980267 12.663956534909747 -11.653046381221715 7.958212156146616 -4.126000748504662 1.5964226612228885 -0.42204704205806876 0.0617266791122268]
 
+const μk = 0.47457614262329006
+const μ = 0.4426585794088818
+const xc = 3.7
 # equilibirium position of R coordinate under the current potenial
 const xeq = -1.735918600503033
 const ω0 = 0.0062736666471555754
 const μeq = 1.2197912355997298
 const dμ0 = -2.0984725146374075
 const dμeq = 0.2253318892690798
-const freqCutoff = 500.0 / au2wn
-const eta = 4.0 * amu2au * freqCutoff
-const gamma = eta / amu2au / 5.0
+const freqCutoff = 1374.0 / au2wn
+const eta = 800.0 / au2wn / 2.0 * amu2au
+# const eta = 0.5 * amu2au * freqCutoff
+const gamma = 200 / au2wn # 400 cm^-1
 
 """
     function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Integer, T2<:Real}
@@ -30,16 +43,16 @@ const gamma = eta / amu2au / 5.0
 Initialize most of the values, parameters and structs for the dynamics.
 """
 # TODO better and more flexible way to handle input values
-function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
-    dynamics::Symbol=:langevin, model::Symbol=:normalModes,
+function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
+    ks::T2 = 0.0, dynamics::Symbol=:langevin, model::Symbol=:normalModes,
     alignment::Symbol=:ordered) where {T1<:Integer, T2<:Real}
 
     nPhoton = 1
     nMolecule = nParticle - nPhoton
     # number of bath modes per molecule! total number of bath mdoes = nMolecule * nBath
-    nBath = 15
+    nBath = 40
     dt = 4.0
-    ν = 0.05
+    ν = 0.1
     τ = floor(Int64, 1/ν)
     # collisionFrequency 
     z = ν * dt
@@ -51,7 +64,7 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
     nBathTotal = nMolecule * nBath
 
     # the suffix for all output file names to identify the setup and avoid overwritting
-    flnmID = string(ωc, "_", chi, "_", temp, "_", nMolecule)
+    flnmID = string(ωc, "_", chi, "_", temp, "_", nb)
     # convert values to au, so we can keep more human-friendly values outside
     ωc /= au2ev
     chi /= au2ev
@@ -60,7 +73,7 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
     # println("+: ", λ₊^2 * nMolecule * μeq * dμ0 / sqrt(amu2au) / ω₊, " ", ω₊)
     # println("-: ", λ₋^2 * nMolecule * μeq * dμ0 / sqrt(amu2au) / ω₋, " ", ω₋)
 
-    rng = Random.seed!(1233+Threads.threadid())
+    rng = Random.seed!(1234)
     if alignment == :ordered
         angles = ones(nMolecule)
         sumCosθ = convert(Float64, nMolecule)
@@ -70,16 +83,26 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
         sumCosθ = sum(angles)
     end
     # array to store equilibrated molecule and photon coordinates for the next trajectory
-    x0 = repeat([xeq], nParticle)
-    x0[1] = 0.0
     if nMolecule > 1
-        x0[end] = couple * -μeq * (sumCosθ-1)
+        # x0[end] = couple * -μeq * (sumCosθ-1)
+        qPhoton = couple * -μeq * (sumCosθ-1)
     else
-        x0[end] = 0.0
+        qPhoton = 0.0
     end
 
-    if dynamics == :SystemBath
-        bath, cache = buildBath(nBath, nMolecule, x0, temp, dt)
+    if nb == 1
+        x0 = repeat([xeq], nParticle)
+        x0[1] = 0.0
+        x0[end] = qPhoton
+    else
+        tmp = (rand(nb) .- 0.5) ./ sqrt(temp)
+        x0 = repeat(tmp, 1, nParticle) ./ sqrt(amu2au)
+        @views x0[:, 2:nMolecule] .+= xeq
+        @views x0[:, end] = tmp
+    end
+
+    if dynamics == :systemBath
+        bath, cache = buildBath(nBath, nMolecule, nb, x0, temp, dt)
     else
         # for Langevin dynamics
         bath, cache = langevinParameters(nMolecule, temp, dt, model, mass)
@@ -94,9 +117,19 @@ function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2;
 
     # angles for the dipole moment
     param = Dynamics.Parameters(temp, dt, z, τ, nParticle, nMolecule,
-        nBathTotal, 1, 1, 1)
-    mol = Dynamics.FullSystemParticle(nMolecule, label, mass, sqrt.(temp./mass),
-        x0, similar(mass), param.Δt./(2*mass), similar(mass), angles)
+        nBathTotal, nb, nb, 1)
+    if nb == 1
+        σv = sqrt.(temp ./ mass)
+        mol = Dynamics.FullSystemParticle(nMolecule, label, mass, σv, x0, ks,
+            0.0, similar(mass), param.Δt./(2*mass), similar(mass), angles)
+    else
+        rpmd = ringPolymerSetup(nb, dt, temp)
+        σv = sqrt.(temp * nb .* mass)
+        halfdt = param.Δt / 2
+        mol = Dynamics.RPMDParticle(nMolecule, nb, label, mass, σv, x0, ks*halfdt,
+            0.0, similar(x0), similar(x0), halfdt, similar(x0), similar(x0),
+            angles, rpmd.tnm, rpmd.tnmi, rpmd.freerp)
+    end
     # obatin the gradient of the corresponding potential
     forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
     return rng, param, mol, bath, forceEvaluation!, cache, flnmID
@@ -114,14 +147,18 @@ function computeBathParameters(nBath::T) where T<:Integer
     mω2 = similar(ω)
     c = similar(ω)
     c_mω2 = similar(ω)
-    tmp = sqrt(2eta * amu2au * freqCutoff / nb / pi)
+    tmp = sqrt(eta * amu2au * freqCutoff / nb)
+    # tmp = sqrt(2eta * amu2au * freqCutoff / nb / pi)
+    w0 = freqCutoff / nb * (1.0 - exp(-3.0))
     @inbounds @simd for i in eachindex(1:nBath)
         # bath mode frequencies
-        ω[i] = -freqCutoff * log((i-0.5) / nb)
+        # ω[i] = -freqCutoff * log((i-0.5) / nb)
+        ω[i] = -freqCutoff * log(1 - i * w0 / freqCutoff)
         # bath force constants
         mω2[i] = ω[i]^2 * amu2au
         # bath coupling strength
-        c[i] = tmp * ω[i]
+        # c[i] = tmp * ω[i]
+        c[i] = sqrt(2 * eta/pi * w0 * amu2au) * ω[i]
         # c/mω^2, for force evaluation
         c_mω2[i] = c[i] / mω2[i]
     end
@@ -214,8 +251,8 @@ function computeModesFreq(ωc::T, sumαi::T) where T<:Real
     return ω₊2, ω₋2, Θ
 end
 
-function buildBath(nBath::T1, nMolecule::T1, x0::AbstractVector{T2}, temp::T2,
-    dt::T2) where {T1<:Integer, T2<:Real}
+function buildBath(nBath::T1, nMolecule::T1, nb::T1, x0::AbstractArray{T2}, 
+    temp::T2, dt::T2) where {T1<:Integer, T2<:Real}
     # compute coefficients for bath modes
     ω, mω2, c, c_mω2 = computeBathParameters(nBath)
     # array to store equilibrated bath coordinates for the next trajectory
@@ -225,14 +262,21 @@ function buildBath(nBath::T1, nMolecule::T1, x0::AbstractVector{T2}, temp::T2,
     for i in eachindex(1:nMolecule)
         @inbounds @simd for j in eachindex(1:nBath)
             index += 1
-            xb0[index] = x0[i] * c_mω2[j]
+            ix = (i-1) * nb + 1
+            xb0[index] = x0[ix] * c_mω2[j]
         end
     end
     bath = Dynamics.ClassicalBathMode(nBath, amu2au, sqrt(temp/amu2au),
         ω, c, mω2, c_mω2, xb0, similar(xb0), dt/(2*amu2au), similar(xb0))
     # pre-allocated array to avoid allocations for force evaluation
-    cache = Dynamics.SystemBathCache(Vector{Float64}(undef, nMolecule),
-        similar(xb0))
+    if nb == 1
+        # FIXME: nMol + 1
+        cache = Dynamics.SystemBathCache(Vector{Float64}(undef, nMolecule),
+            similar(xb0))
+    else
+        cache = Dynamics.SystemBathCache(Vector{Float64}(undef, nb),
+            similar(xb0))
+    end
     return bath, cache
 end
 
@@ -276,9 +320,9 @@ function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2,
     else
         if nMolecule > 1
             println("In no-coupling case, multi-molecule does not make sense. Reduce to single-molecule.")
-            nParticle = 1
-            nMolecule = 1
         end
+        nParticle = 1
+        nMolecule = 1
         label = Vector{String}(undef, 0)
         mass = Vector{Float64}(undef, 0)
     end
@@ -287,17 +331,31 @@ function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2,
     return nParticle, nMolecule, label, mass
 end
 
+function μetp₊(x::T) where T<:Real
+    return μk * (x - xc) - μ
+end
+
+function μetp₋(x::T) where T<:Real
+    return μk * (x + xc) + μ
+end
+
 """
     function dipole(x::T) where T<:Real
 
 Fourier sine series to compute the permannet dipole at x.
 """
 function dipole(x::T) where T<:Real
-    mu = 0.0
-    @inbounds @simd for i in 1:6
-        ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
-        mu += dipoleCoeff[3, i] * sin(ϕ)
-    end
+    # if -xc < x < xc
+        mu = 0.0
+        @inbounds @simd for i in 1:6
+            ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
+            mu += dipoleCoeff[3, i] * sin(ϕ)
+        end
+    # elseif x >= xc
+    #     mu = μetp₊(x)
+    # else
+    #     mu = μetp₋(x)
+    # end
     return mu
 end
 
@@ -344,11 +402,15 @@ end
 Compute the derivative with respect to permannet dipole at x.
 """
 function dμdr(x::T) where T<:Real
-    dμ = 0.0
-    for i in eachindex(1:6)
-        ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
-        dμ += dipoleCoeff[4, i] * cos(ϕ)
-    end
+    # if -xc < x < xc
+        dμ = 0.0
+        for i in eachindex(1:6)
+            ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
+            dμ += dipoleCoeff[4, i] * cos(ϕ)
+        end
+    # else
+    #     dμ = -μk
+    # end
     return dμ
 end
 
@@ -375,6 +437,20 @@ function computeForceComponents(x::T) where T<:Real
         dv += pesCoeff[3, j] * sin(ϕ1)
     end
     return dv, μ, dμ
+end
+
+function getPES(pes="../../pes_low.txt", dm="../../dm_low.txt")
+    potentialRaw = readdlm(pes)
+    dipoleRaw = readdlm(dm)
+    xrange = LinRange(potentialRaw[1, 1], potentialRaw[end, 1],
+        length(potentialRaw[:, 1]))
+    pesMol = LinearInterpolation(xrange, potentialRaw[:, 2],
+        extrapolation_bc=Line())
+    xrange = LinRange(dipoleRaw[1, 1], dipoleRaw[end, 1],
+        length(dipoleRaw[:, 1]))
+    dipole = LinearInterpolation(xrange, dipoleRaw[:, 2],
+        extrapolation_bc=Line())
+    return pesMol, dipole
 end
 
 """
@@ -409,27 +485,36 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
         f[1] = dvdr(x[1])
     end
 
-    """
-        function forceSingleMol(f::AbstractVector{T}, x::AbstractVector{T},
-        cache::AbstractMatrix{T}) where T<:Real
+    itp = false
+    if itp
+        v, mu = getPES()
+        @inline function uTotal(x::AbstractVector{T}) where T<:AbstractFloat
+            return -v(x[1]) - kPho * (couple*mu(x[1]) + x[2])^2
+        end
+        cache = GradientCache(zeros(2), zeros(2))
+        forceSingleMol! = (f, x) -> finite_difference_gradient!(f, uTotal, x, cache)
+    else
+        """
+            function forceSingleMol(f::AbstractVector{T}, x::AbstractVector{T},
+            cache::AbstractMatrix{T}) where T<:Real
 
-    Compute force for one single molecule and one photon.
-    Cache is dummy, since I can't get the code disptached for now.
-    """
-    function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T}
-        ) where T<:Real
+        Compute force for one single molecule and one photon.
+        Cache is dummy, since I can't get the code disptached for now.
+        """
+        function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T}
+            ) where T<:Real
 
-        interaction = (couple * dipole(x[1]) + x[2])
-        f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
-        f[2] = kPho2 * interaction
+            interaction = (couple * dipole(x[1]) + x[2])
+            f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
+            f[2] = kPho2 * interaction
+            # f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * x[2]
+            # f[2] = kPho2 * couple * dipole(x[1])
+        end
     end
+
 
     function pot(x::AbstractVector{T}) where {T<:Real}
         return pes(x[1]) + kPho * (couple * dipole(x[1]) + x[2])^2
-    end
-
-    function energy(x::AbstractVector{T}, v::AbstractVector{T}) where {T<:Real}
-        return 918.0v[1]^2 + 0.5v[2]^2 + pot(x)
     end
 
     """
