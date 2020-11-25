@@ -63,8 +63,8 @@ function computeKappa(input::KappaInput)
     end
 
     fs0 = 0.0
-    fs = zeros(nstep)
-    q = zeros(nstep)
+    fs = zeros(Float64, nstep)
+    q = Vector{Float64}(undef, nstep)
     # vb = copy(mol.v)
     Dynamics.velocitySampling!(mol, bath, rng)
     Dynamics.force!(mol, bath, forceEval!, alignment)
