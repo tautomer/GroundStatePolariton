@@ -47,7 +47,7 @@ function computeKappa(input::KappaInput)
         input.dynamics = :systemBath
     end
 
-    rng, param, mol, bath, forceEval!, pot, cache, flnmID = initialize(np, nb,
+    rng, param, mol, bath, forceEval!, cache, flnmID = initialize(np, nb,
         input.temp, input.ωc, input.χ, dynamics=input.dynamics,
         model=input.model, alignment=input.alignment)
     
@@ -177,7 +177,7 @@ function umbrellaSampling(input::UmbrellaInput)
     nCollected = floor(Int64, nstep/nskip)
     temp = input.temp / au2kelvin
     xi = umbrellaSetup(temp, nw, ks, bound, input.unbias)
-    rng, param, mol, bath, forceEval!, pot, cache, flnmID = initialize(np, nb,
+    rng, param, mol, bath, forceEval!, cache, flnmID = initialize(np, nb,
         input.temp, input.ωc, input.χ, ks=ks, dynamics=:systemBath,
         model=:fullSystem)
     us_param, pmf_array =  WHAM.setup(temp, nw, bound, xi, ks/2.0, nBin=10*nw+1,
@@ -212,17 +212,13 @@ function umbrellaSampling(input::UmbrellaInput)
             # println(output, j, " ", cv[j])
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", uTotal(mol.x[1], mol.x[2]), " ", q[j+1])
         end
-        # wham_array = WHAM.biasedDistibution(cv, i, wham_param, ui_array)
-        # writedlm(output, [wham_param.binCenter ui_array.vBiased[:, i]])
-        # ui_array.mean[i], ui_array.var[i] = WHAM.windowStats(cv)
         WHAM.biased!(pmf_array, us_param, cv, i)
+        # writedlm(output, [us_param.binCenter pmf_array.vBiased[:, i]])
         # close(output)
     end
 
-    # xbin, pmf = WHAM.unbias(wham_param, ui_array)
-    # xbin, pmf = @time WHAM.integration(wham_param, ui_array)
     xbin, pmf = WHAM.unbias(pmf_array, us_param)
-    flnm = string("pmf_", flnmID, ".txt")
+    flnm = string("pmf_", flnmID, "_more_points.txt")
     open(flnm, "w") do io
         @printf(io, "# ω_c=%5.3f,χ=%6.4f \n", input.ωc, input.χ)
         @printf(io, "# Thread ID: %3d\n", Threads.threadid())
@@ -237,6 +233,7 @@ function umbrellaSampling(input::UmbrellaInput)
 end
 
 function rate(out::IOStream, fs::AbstractVector{T}, tst::T, beta::T) where T<:AbstractFloat
+    k = 3.4633383e-22
     kappa = mean(fs[end-50:end])
     dev = varm(fs[end-50:end], kappa, corrected=false)    
     if dev >= 1e-6
@@ -252,6 +249,6 @@ function rate(out::IOStream, fs::AbstractVector{T}, tst::T, beta::T) where T<:Ab
     temp = au2kelvin / beta
     invtemp = beta /au2kelvin
     @printf(out, "%7.5f %9.5f %9.5f %7.2f %9.5f %11.8g %11.8g %8.6g %11.8g %s\n",
-        invtemp, logkau, logkEyring, temp, logksi, kau, ksi, kappa, tst, flag)
+        invtemp, logkau, logkEyring, temp, logksi, kau, kau/k, kappa, tst, flag)
     return kau
 end

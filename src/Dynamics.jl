@@ -84,7 +84,8 @@ function andersen!(p::RPMDParticle, cf::T, rng::AbstractRNG,
 
     @inbounds @simd for i in eachindex(p.m)
         @views v = p.v[:, i]
-        andersen!(v, cf, rng, p.σ[i], cache.cacheMol1)
+        velocitySampling!(v, p.σ[i], rng)
+        # andersen!(v, cf, rng, p.σ[i], cache.cacheMol1)
     end
 end
 

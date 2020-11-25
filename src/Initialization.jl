@@ -23,6 +23,9 @@ const pesCoeff = [0.4480425396401699 0.8960850792803398 1.3441276189205096 1.792
     -19.07993156151155 14.132538112430545 -8.669598196769785 4.440544955027029 -1.841789733545533 0.5938508511955884 -0.13456854929031054 0.017221210502076565;
     -8.548620992980267 12.663956534909747 -11.653046381221715 7.958212156146616 -4.126000748504662 1.5964226612228885 -0.42204704205806876 0.0617266791122268]
 
+const μk = 0.47457614262329006
+const μ = 0.4426585794088818
+const xc = 3.7
 # equilibirium position of R coordinate under the current potenial
 const xeq = -1.735918600503033
 const ω0 = 0.0062736666471555754
@@ -128,8 +131,8 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
             angles, rpmd.tnm, rpmd.tnmi, rpmd.freerp)
     end
     # obatin the gradient of the corresponding potential
-    forceEvaluation!, pot = constructForce(ωc, chi, nParticle, nMolecule)
-    return rng, param, mol, bath, forceEvaluation!, pot, cache, flnmID
+    forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
+    return rng, param, mol, bath, forceEvaluation!, cache, flnmID
 end
 
 """
@@ -300,7 +303,7 @@ not be very meaningful for now. Keep for future.
 function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2,
     model::Symbol) where {T1<:Integer, T2<:Real}
 
-    if nParticle != nMolecule # && chi != 0.0
+    if nParticle != nMolecule && chi != 0.0
         # χ != 0 
         if nParticle - nMolecule > 1
             println("Multi-modes not supported currently. Reduce to single-mode.")
@@ -317,9 +320,9 @@ function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2,
     else
         if nMolecule > 1
             println("In no-coupling case, multi-molecule does not make sense. Reduce to single-molecule.")
-            nParticle = 1
-            nMolecule = 1
         end
+        nParticle = 1
+        nMolecule = 1
         label = Vector{String}(undef, 0)
         mass = Vector{Float64}(undef, 0)
     end
@@ -328,17 +331,31 @@ function checkParticleNumbers(nParticle::T1, nMolecule::T1, chi::T2,
     return nParticle, nMolecule, label, mass
 end
 
+function μetp₊(x::T) where T<:Real
+    return μk * (x - xc) - μ
+end
+
+function μetp₋(x::T) where T<:Real
+    return μk * (x + xc) + μ
+end
+
 """
     function dipole(x::T) where T<:Real
 
 Fourier sine series to compute the permannet dipole at x.
 """
 function dipole(x::T) where T<:Real
-    mu = 0.0
-    @inbounds @simd for i in 1:6
-        ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
-        mu += dipoleCoeff[3, i] * sin(ϕ)
-    end
+    # if -xc < x < xc
+        mu = 0.0
+        @inbounds @simd for i in 1:6
+            ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
+            mu += dipoleCoeff[3, i] * sin(ϕ)
+        end
+    # elseif x >= xc
+    #     mu = μetp₊(x)
+    # else
+    #     mu = μetp₋(x)
+    # end
     return mu
 end
 
@@ -385,11 +402,15 @@ end
 Compute the derivative with respect to permannet dipole at x.
 """
 function dμdr(x::T) where T<:Real
-    dμ = 0.0
-    for i in eachindex(1:6)
-        ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
-        dμ += dipoleCoeff[4, i] * cos(ϕ)
-    end
+    # if -xc < x < xc
+        dμ = 0.0
+        for i in eachindex(1:6)
+            ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
+            dμ += dipoleCoeff[4, i] * cos(ϕ)
+        end
+    # else
+    #     dμ = -μk
+    # end
     return dμ
 end
 
@@ -538,7 +559,7 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
     else
         if nMolecule == 1
             # single-molecule and single photon
-            return forceSingleMol!, pot
+            return forceSingleMol!
         else
             # multi-molecules and single photon
             return forceMultiMol!
