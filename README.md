@@ -2,12 +2,10 @@
 
 100% Julia implementation.
 
-PES and the permenant dipole is generated from the Shin-Metui model and then
-read from text file. I'm using linear interpolation because it's cheaper. By
-using more points in the originl Shin-metui script, the linear interpolated
-PES, in fact, has higher quality.
+PES and the permenant dipole is generated from the Shin-Metiu model and then
+fitted with a Fourier series (for PES) and sine series (for DM). 
 
-This program currently handles single-molecule and single-photon case.
+This program currently handles single-molecule, many-molecule and single-photon case in both classical and quantum (via RPMD) treatment.
 The transimission coefficient and free energy barrier are computed separately.
 Then the rate is calculated from these values.
 
@@ -18,8 +16,7 @@ like a piece of shit.
 
 ## TODO list
 
-1. Multi-molecule (WIP)
-2. RPMD
-3. File structure improvement
-4. More sensible input parameters, pabably from a JSON file?
-5. Debugging options. Use multiple dispatch?
+1. 2 different barriers (WIP)
+2. File structure improvement
+3. More sensible input parameters, pabably from a JSON file?
+4. Debugging options. Use multiple dispatch?
