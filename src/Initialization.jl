@@ -1,3 +1,4 @@
+include("FittedParameters.jl")
 using Constants
 using Random
 using LinearAlgebra: dot
@@ -11,28 +12,7 @@ else
     using RingPolymer
 end
 
-# Fourier series fitted parameters
-# dipole
-const dipoleCoeff = [0.8017194824351892 3.2923071635398693 1.9571015898154989 4.721532196133278 7.745224719320653 6.217082808943054;
-    3.1415926535894014 3.1415926535945484 -3.1415926535898957 3.141592653598072 3.141592653535209 -1.760747833413431e-11;
-    1.3496422641395616 0.07841064324878252 0.31897867072301 0.019819260283106183 0.0012061473577049471 -0.005001264129667085;
-    -1.0820344974786262 -0.2581519224657358 -0.6242736635892374 -0.09357727553023139 -0.009341882330039646 0.031093273243536782]
-# potenial
-const a0 = 9.92928333994269962659 
-const pesCoeff = [0.4480425396401699 0.8960850792803398 1.3441276189205096 1.7921701585606795 2.2402126982008492 2.688255237841019 3.136297777481189 3.584340317121359;
-    -19.07993156151155 14.132538112430545 -8.669598196769785 4.440544955027029 -1.841789733545533 0.5938508511955884 -0.13456854929031054 0.017221210502076565;
-    -8.548620992980267 12.663956534909747 -11.653046381221715 7.958212156146616 -4.126000748504662 1.5964226612228885 -0.42204704205806876 0.0617266791122268]
-
-const μk = 0.47457614262329006
-const μ = 0.4426585794088818
-const xc = 3.7
-# equilibirium position of R coordinate under the current potenial
-const xeq = -1.735918600503033
-const ω0 = 0.0062736666471555754
-const μeq = 1.2197912355997298
-const dμ0 = -2.0984725146374075
-const dμeq = 0.2253318892690798
-const freqCutoff = 1374.0 / au2wn
+const freqCutoff = ω0[1] / au2wn
 const eta = 800.0 / au2wn / 2.0 * amu2au
 # const eta = 0.5 * amu2au * freqCutoff
 const gamma = 200 / au2wn # 400 cm^-1
@@ -340,81 +320,6 @@ function μetp₋(x::T) where T<:Real
 end
 
 """
-    function dipole(x::T) where T<:Real
-
-Fourier sine series to compute the permannet dipole at x.
-"""
-function dipole(x::T) where T<:Real
-    # if -xc < x < xc
-        mu = 0.0
-        @inbounds @simd for i in 1:6
-            ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
-            mu += dipoleCoeff[3, i] * sin(ϕ)
-        end
-    # elseif x >= xc
-    #     mu = μetp₊(x)
-    # else
-    #     mu = μetp₋(x)
-    # end
-    return mu
-end
-
-"""
-    function pes(x::T) where T<:Real
-
-Fourier cosine series to compute the PES at x.
-"""
-function pes(x::T) where T<:Real
-    v = a0
-    @inbounds @simd for i in eachindex(1:8)
-        ϕ = pesCoeff[1, i] * x
-        v += pesCoeff[2, i] * cos(ϕ)
-    end
-    return v
-end
-
-function ufit(x::AbstractVector{T}) where {T<:Real}
-    ∑μ = 0.0
-    ∑v = 0.0
-    @inbounds @simd for i in eachindex(1:length(x)-1)
-        ∑μ += dipole(x[i])
-        ∑v += pes(x[i])
-    end
-    return ∑v + 1.728705305973675e-5 * (15.055424826054347 * ∑μ + x[end])^2
-end
-"""
-    function dvdr(x::T) where T<:Real
-
-Compute the derivative with respect to PES at x.
-"""
-function dvdr(x::T) where T<:Real
-    dv = 0.0
-    @inbounds @simd for i in eachindex(1:8)
-        ϕ = pesCoeff[1, i] * x
-        dv += pesCoeff[3, i] * sin(ϕ)
-    end
-    return dv
-end
-
-"""
-    function dμdr(x::T) where T<:Real
-
-Compute the derivative with respect to permannet dipole at x.
-"""
-function dμdr(x::T) where T<:Real
-    # if -xc < x < xc
-        dμ = 0.0
-        for i in eachindex(1:6)
-            ϕ = dipoleCoeff[1, i] * x + dipoleCoeff[2, i]
-            dμ += dipoleCoeff[4, i] * cos(ϕ)
-        end
-    # else
-    #     dμ = -μk
-    # end
-    return dμ
-end
-
-"""
     function computeForceComponents(x::T) where T<:Real
 
 Compute -dvdr, μ, and -dμdr in one loop. dvdr and dμdr are negated as they
@@ -507,50 +412,65 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
             interaction = (couple * dipole(x[1]) + x[2])
             f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
             f[2] = kPho2 * interaction
-            # f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * x[2]
-            # f[2] = kPho2 * couple * dipole(x[1])
         end
     end
 
-
-    function pot(x::AbstractVector{T}) where {T<:Real}
-        return pes(x[1]) + kPho * (couple * dipole(x[1]) + x[2])^2
-    end
-
-    """
-        function forceiMultiMol(f::AbstractVector{T}, x::AbstractVector{T},
-        cache::AbstractMatrix{T}) where T<:Real
-
-    The ugly but faster way of implementing multi-molecule force evaluation.
-    """
-    function forceMultiMol!(f::T, x::T, angle::T) where T<:AbstractVector{T1
-        } where T1<:Real
-
-        ∑μ = 0.0
-        q = x[end]
-        tmp = q * sqrt2ωχ 
-        @inbounds @simd for i in eachindex(1:length(x)-1)
-            cosθ = angle[i]
-            dv, μ, dμ = computeForceComponents(x[i])
-            # f[i] = dv + (tmp + χ2byω * μ) * dμ
-            f[i] = dv + tmp * dμ * cosθ
-            ∑μ += μ * cosθ
+    if twoD == true
+        if measured == 1
+            index = [1, 2]
+        else
+            index = [2, 1]
         end
-        f[end] = kPho2 * q - sqrt2ωχ * ∑μ
-    end
+        function forceMultiMol!(f::T, x::T) where T<:AbstractVector{T1
+            } where T1<:Real
 
-    function forceMultiMol!(f::T, x::T) where T<:AbstractVector{T1} where T1<:Real
+            ∑μ = 0.0
+            q = x[end]
+            tmp = q * sqrt2ωχ 
+            @inbounds @simd for i in eachindex(1:2)
+                μ = dipole(x[i], index[i])
+                dv = dvdr(x[i], index[i])
+                dμ = dμdr(x[i], index[i])
+                f[i] = dv + (tmp + χ2byω * μ) * dμ
+                ∑μ += μ
+            end
+            f[end] = kPho2 * q - sqrt2ωχ * ∑μ
+        end        
+    else
+        """
+            function forceiMultiMol(f::AbstractVector{T}, x::AbstractVector{T},
+            cache::AbstractMatrix{T}) where T<:Real
 
-        ∑μ = 0.0
-        q = x[end]
-        tmp = q * sqrt2ωχ
-        @inbounds @simd for i in eachindex(1:length(x)-1)
-            dv, μ, dμ = computeForceComponents(x[i])
-            # f[i] = dv + (tmp + χ2byω * μ) * dμ
-            f[i] = dv + tmp * dμ
-            ∑μ += μ 
+        The ugly but faster way of implementing multi-molecule force evaluation.
+        """
+        function forceMultiMol!(f::T, x::T, angle::T) where T<:AbstractVector{T1
+            } where T1<:Real
+
+            ∑μ = 0.0
+            q = x[end]
+            tmp = q * sqrt2ωχ 
+            @inbounds @simd for i in eachindex(1:length(x)-1)
+                cosθ = angle[i]
+                dv, μ, dμ = computeForceComponents(x[i])
+                f[i] = dv + tmp * dμ * cosθ
+                ∑μ += μ * cosθ
+            end
+            f[end] = kPho2 * q - sqrt2ωχ * ∑μ
         end
-        f[end] = kPho2 * q - sqrt2ωχ * ∑μ
+
+        function forceMultiMol!(f::T, x::T) where T<:AbstractVector{T1} where T1<:Real
+
+            ∑μ = 0.0
+            q = x[end]
+            tmp = q * sqrt2ωχ
+            @inbounds @simd for i in eachindex(1:length(x)-1)
+                dv, μ, dμ = computeForceComponents(x[i])
+                # f[i] = dv + (tmp + χ2byω * μ) * dμ
+                f[i] = dv + tmp * dμ
+                ∑μ += μ 
+            end
+            f[end] = kPho2 * q - sqrt2ωχ * ∑μ
+        end
     end
     if nParticle == nMolecule
         # when there is no photon, we force the system to be 1D

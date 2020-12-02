@@ -387,7 +387,7 @@ end
 function force!(p::RPMDParticle, b::Bath1D, ∇u!::Function, ::order)
 
     b.f .= 0.0
-    for i in eachindex(1:p.nb)
+    @inbounds @simd for i in eachindex(1:p.nb)
         x = @view p.x[i, :]
         f = @view p.f[i, :]
         ∇u!(f, x)
