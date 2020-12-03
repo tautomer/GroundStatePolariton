@@ -12,7 +12,7 @@ else
     using RingPolymer
 end
 
-const freqCutoff = ω0[1] / au2wn
+const freqCutoff = ω0[1]
 const eta = 800.0 / au2wn / 2.0 * amu2au
 # const eta = 0.5 * amu2au * freqCutoff
 const gamma = 200 / au2wn # 400 cm^-1
@@ -24,8 +24,9 @@ Initialize most of the values, parameters and structs for the dynamics.
 """
 # TODO better and more flexible way to handle input values
 function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
-    ks::T2 = 0.0, dynamics::Symbol=:langevin, model::Symbol=:normalModes,
-    alignment::Symbol=:ordered) where {T1<:Integer, T2<:Real}
+    constrained::T1=1, ks::T2=0.0, barriers::T3=:oneBarrier,
+    dynamics::T3=:langevin, model::T3=:normalModes, alignment::T3=:ordered
+    ) where {T1<:Integer, T2<:Float64, T3<:Symbol}
 
     nPhoton = 1
     nMolecule = nParticle - nPhoton
@@ -49,37 +50,12 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
     ωc /= au2ev
     chi /= au2ev
     temp /= au2kelvin
-    couple = sqrt(2/ωc^3) * chi
     # println("+: ", λ₊^2 * nMolecule * μeq * dμ0 / sqrt(amu2au) / ω₊, " ", ω₊)
     # println("-: ", λ₋^2 * nMolecule * μeq * dμ0 / sqrt(amu2au) / ω₋, " ", ω₋)
 
     rng = Random.seed!(1234)
-    if alignment == :ordered
-        angles = ones(nMolecule)
-        sumCosθ = convert(Float64, nMolecule)
-    else
-        angles = Vector{Float64}(undef, nMolecule)
-        getRandomAngles!(angles, rng)
-        sumCosθ = sum(angles)
-    end
-    # array to store equilibrated molecule and photon coordinates for the next trajectory
-    if nMolecule > 1
-        # x0[end] = couple * -μeq * (sumCosθ-1)
-        qPhoton = couple * -μeq * (sumCosθ-1)
-    else
-        qPhoton = 0.0
-    end
-
-    if nb == 1
-        x0 = repeat([xeq], nParticle)
-        x0[1] = 0.0
-        x0[end] = qPhoton
-    else
-        tmp = (rand(nb) .- 0.5) ./ sqrt(temp)
-        x0 = repeat(tmp, 1, nParticle) ./ sqrt(amu2au)
-        @views x0[:, 2:nMolecule] .+= xeq
-        @views x0[:, end] = tmp
-    end
+    angles, x0 = initialPositions(nParticle, nMolecule, nb, constrained, rng,
+        ωc, chi, barriers, alignment) 
 
     if dynamics == :systemBath
         bath, cache = buildBath(nBath, nMolecule, nb, x0, temp, dt)
@@ -111,8 +87,57 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
             angles, rpmd.tnm, rpmd.tnmi, rpmd.freerp)
     end
     # obatin the gradient of the corresponding potential
-    forceEvaluation! = constructForce(ωc, chi, nParticle, nMolecule)
+    forceEvaluation! = constructForce(nParticle, nMolecule, constrained, ωc,
+        chi, barriers)
     return rng, param, mol, bath, forceEvaluation!, cache, flnmID
+end
+
+"""
+    function initialPositions(nParticle::T1, nMolecule::T1, nb::T1,
+        constrained::T1, rng::AbstractRNG, ωc::T2, χ::T2, barriers::T3,
+        alignment::T3) where {T1<:Integer, T2<:Float64, T3<:Symbol}
+
+Compute the initial positions for R's and q_c.
+"""
+function initialPositions(nParticle::T1, nMolecule::T1, nb::T1,
+    constrained::T1, rng::AbstractRNG, ωc::T2, χ::T2, barriers::T3,
+    alignment::T3) where {T1<:Integer, T2<:Float64, T3<:Symbol}
+
+    couple = sqrt(2/ωc^3) * χ
+    # deal with ordered/disordered systems in many molecule case
+    # TODO: is this still necessary?
+    if alignment == :ordered
+        angles = ones(nMolecule)
+        sumCosθ = convert(Float64, nMolecule)
+    else
+        angles = Vector{Float64}(undef, nMolecule)
+        getRandomAngles!(angles, rng)
+        sumCosθ = sum(angles)
+    end
+    if barriers == :twoBarriers
+        qPhoton = couple * -μeq[3-constrained] * (sumCosθ-1)
+        x0 = [0.0, xeq[3-constrained], qPhoton]
+    else
+        if nMolecule > 1
+            # x0[end] = couple * -μeq * (sumCosθ-1)
+            qPhoton = couple * -μeq[1] * (sumCosθ-1)
+        else
+            qPhoton = 0.0
+        end
+
+        if nb == 1
+            x0 = repeat([xeq[1]], nParticle)
+            x0[1] = 0.0
+            x0[end] = qPhoton
+        else
+            tmp = (rand(nb) .- 0.5) ./ sqrt(temp)
+            x0 = repeat(tmp, 1, nParticle) ./ sqrt(amu2au)
+            @views x0[:, 2:nMolecule] .+= xeq[1]
+            @views x0[:, end] = tmp
+        end
+    end
+
+    return angles, x0
 end
 
 """
@@ -187,7 +212,7 @@ end
 function reducedModelSetup(ωc::T, χ::T, sumCosθ::T) where T<:Real
 
     massWeight = sqrt(amu2au)
-    mwdμeq = dμeq / massWeight
+    mwdμeq = dμeq[1] / massWeight
     λ = sqrt(2ωc) * χ
     αi2 = (λ * mwdμeq)^2
     sumαi = αi2 * sumCosθ
@@ -202,8 +227,8 @@ end
 function constructForce(ω₊2::T, ω₋2::T, λ₊::T, λ₋::T, mw::T, sumCosθ::T) where T<:Real
     mwλ₊ = λ₊ / mw
     mwλ₋ = λ₋ / mw
-    λ₊μeq = λ₊ * μeq
-    λ₋μeq = λ₋ * μeq
+    λ₊μeq = λ₊ * μeq[1]
+    λ₋μeq = λ₋ * μeq[1]
     q₊ = -λ₊μeq * sumCosθ / ω₊2
     q₋ = -λ₋μeq * sumCosθ / ω₋2
     # println(q₊, " ", q₋)
@@ -368,11 +393,12 @@ Note that the returned potential is only for calclating force purpose, so it is
 inverted to avoid a "-" at each iteration.
 """
 # TODO RPMD & multi-modes?
-function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1, T2<:Real}
+function constructForce(nParticle::T1, nMolecule::T1, constrained::T1, ωc::T2,
+    χ::T2, barriers::Symbol) where {T1<:Integer, T2<:Float64}
     # compute the constants in advances. they can be expensive for many cycles
     kPho = 0.5 * ωc^2
-    # sqrt(2 / ω_c^3) * χ
     kPho2 = -2kPho
+    # sqrt(2 / ω_c^3) * χ
     couple = sqrt(2/ωc^3) * χ
     sqrt2ωχ = -kPho2 * couple
     χ2byω = 2χ^2 / ωc
@@ -415,12 +441,8 @@ function constructForce(ωc::T1, χ::T1, nParticle::T2, nMolecule::T2) where {T1
         end
     end
 
-    if twoD == true
-        if measured == 1
-            index = [1, 2]
-        else
-            index = [2, 1]
-        end
+    if barriers == :twoBarriers
+        index = [constrained, 3 - constrained]
         function forceMultiMol!(f::T, x::T) where T<:AbstractVector{T1
             } where T1<:Real
 

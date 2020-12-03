@@ -53,9 +53,8 @@ using Profile
 function testKappa(wc, eta)
     cd("energy")
     chi = eta * wc
-    input = KappaInput(3, 64, 1, 1, 300.0, wc, chi, :systemBath, :fullSystem,
-    # input = KappaInput(2, 1, 1, 1, 300.0, wc, chi, :langevin, :fullSystem,
-        :ordered) 
+    input = KappaInput(2, 1, 1, 1, 1, 300.0, wc, chi, :systemBath, :fullSystem,
+        :ordered, :oneBarrier) 
     @time computeKappa(input)
     input.ntraj = 20000
     input.nstep = 2000
@@ -220,7 +219,7 @@ end
 # resonance(4.0, 2)
 # scaneta(0.1706, 2)
 # computeΔΔG("data/eta_scan.txt", 300.0)
-# testKappa(0.1, 4.0)
-testPMF(0.005, 0.04, :UI)
+testKappa(0.1, 4.0)
+# testPMF(0.005, 0.04, :UI)
 # rpmdrate(0.005, 0.04, :UI)
 # read()

@@ -18,12 +18,14 @@ const corr = CorrelationFunctions
     nb::T1
     ntraj::T1
     nstep::T1
+    constrained::T1
     temp::T2
     ωc::T2
     χ::T2
     dynamics::T3
     model::T3
     alignment::T3
+    barriers::T3
 end
 
 @with_kw mutable struct UmbrellaInput{T1<:Integer, T2<:AbstractFloat, T3<:Symbol}
@@ -48,8 +50,9 @@ function computeKappa(input::KappaInput)
     end
 
     rng, param, mol, bath, forceEval!, cache, flnmID = initialize(np, nb,
-        input.temp, input.ωc, input.χ, dynamics=input.dynamics,
-        model=input.model, alignment=input.alignment)
+        input.temp, input.ωc, input.χ, constrained=input.constrained,
+        barriers=input.barriers, dynamics=input.dynamics, model=input.model, 
+        alignment=input.alignment)
     
     # dir = string(input.ωc, "_", input.χ)
     # if ! isdir(dir)
