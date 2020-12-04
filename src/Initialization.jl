@@ -88,7 +88,7 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
     end
     # obatin the gradient of the corresponding potential
     forceEvaluation! = constructForce(nParticle, nMolecule, constrained, ωc,
-        chi, barriers)
+        chi, alignment, barriers)
     return rng, param, mol, bath, forceEvaluation!, cache, flnmID
 end
 
@@ -351,20 +351,20 @@ Compute -dvdr, μ, and -dμdr in one loop. dvdr and dμdr are negated as they
 appear negative in the force expression. It is done by taking negative values
 of their prefactors.
 """
-function computeForceComponents(x::T) where T<:Real
+function computeForceComponents(x::T, k::Integer=1) where T<:Real
     dv = 0.0
     μ = 0.0
     dμ = 0.0
     @inbounds @simd for j in eachindex(1:6)
-        ϕ1 = pesCoeff[1, j] * x
-        ϕ2 = dipoleCoeff[1, j] * x + dipoleCoeff[2, j]
-        dv += pesCoeff[3, j] * sin(ϕ1)
-        μ += dipoleCoeff[3, j] * sin(ϕ2)
-        dμ += dipoleCoeff[4, j] * cos(ϕ2)
+        ϕ1 = pesCoeff[1, j, k] * x
+        ϕ2 = dipoleCoeff[1, j, k] * x + dipoleCoeff[2, j, k]
+        dv += pesCoeff[3, j, k] * sin(ϕ1)
+        μ += dipoleCoeff[3, j, k] * sin(ϕ2)
+        dμ += dipoleCoeff[4, j, k] * cos(ϕ2)
     end
     @inbounds @simd for j in 7:8
-        ϕ1 = pesCoeff[1, j] * x
-        dv += pesCoeff[3, j] * sin(ϕ1)
+        ϕ1 = pesCoeff[1, j, k] * x
+        dv += pesCoeff[3, j, k] * sin(ϕ1)
     end
     return dv, μ, dμ
 end
@@ -394,7 +394,37 @@ inverted to avoid a "-" at each iteration.
 """
 # TODO RPMD & multi-modes?
 function constructForce(nParticle::T1, nMolecule::T1, constrained::T1, ωc::T2,
-    χ::T2, barriers::Symbol) where {T1<:Integer, T2<:Float64}
+    χ::T2, alignment::T3, barriers::T3) where {T1<:Integer, T2<:Float64,
+    T3<:Symbol}
+
+    if nParticle == nMolecule
+        # when there is no photon, we force the system to be 1D
+        # we will still use an 1-element vector as the input
+        # TODO use 1 float number in this case for better performance
+        """
+            function forceOneD(f::AbstractVector{T}, x::AbstractVector{T},
+            cache::AbstractMatrix{T}) where T<:Real
+
+        Compute force for one single molecule and zero photon.
+        Cache is dummy, since I can't get the code disptached for now.
+        """
+        @inline function forceOneD!(f::AbstractVector{T}, x::AbstractVector{T}
+            ) where T<:Real
+            f[1] = dvdr(x[1])
+        end
+        return forceOneD!
+    else
+        if nMolecule == 1
+            # single-molecule and single photon
+            return single(ωc, χ, false)
+        else
+            # multi-molecules and single photon
+            return multi(constrained, ωc, χ, alignment, barriers)
+        end
+    end
+end
+
+function single(ωc::T1, χ::T1, itp::Bool) where T1<:Float64
     # compute the constants in advances. they can be expensive for many cycles
     kPho = 0.5 * ωc^2
     kPho2 = -2kPho
@@ -402,21 +432,6 @@ function constructForce(nParticle::T1, nMolecule::T1, constrained::T1, ωc::T2,
     couple = sqrt(2/ωc^3) * χ
     sqrt2ωχ = -kPho2 * couple
     χ2byω = 2χ^2 / ωc
-    # construct an inverted total potential
-    # TODO use 1 float number in this case for better performance
-    """
-        function forceOneD(f::AbstractVector{T}, x::AbstractVector{T},
-        cache::AbstractMatrix{T}) where T<:Real
-
-    Compute force for one single molecule and zero photon.
-    Cache is dummy, since I can't get the code disptached for now.
-    """
-    @inline function forceOneD!(f::AbstractVector{T}, x::AbstractVector{T}
-        ) where T<:Real
-        f[1] = dvdr(x[1])
-    end
-
-    itp = false
     if itp
         v, mu = getPES()
         @inline function uTotal(x::AbstractVector{T}) where T<:AbstractFloat
@@ -424,6 +439,7 @@ function constructForce(nParticle::T1, nMolecule::T1, constrained::T1, ωc::T2,
         end
         cache = GradientCache(zeros(2), zeros(2))
         forceSingleMol! = (f, x) -> finite_difference_gradient!(f, uTotal, x, cache)
+        return forceSingleMol!
     else
         """
             function forceSingleMol(f::AbstractVector{T}, x::AbstractVector{T},
@@ -433,17 +449,30 @@ function constructForce(nParticle::T1, nMolecule::T1, constrained::T1, ωc::T2,
         Cache is dummy, since I can't get the code disptached for now.
         """
         function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T}
-            ) where T<:Real
-
+            ) where T<:Real                
+            
             interaction = (couple * dipole(x[1]) + x[2])
             f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
             f[2] = kPho2 * interaction
         end
+        return forceSingleMol!
     end
+end
+
+function multi(constrained::T1, ωc::T2, χ::T2, alignment::T3, barriers::T3
+    ) where {T1<:Integer, T2<:Float64, T3<:Symbol}
+    
+    # compute the constants in advances. they can be expensive for many cycles
+    kPho = 0.5 * ωc^2
+    kPho2 = -2kPho
+    # sqrt(2 / ω_c^3) * χ
+    couple = sqrt(2/ωc^3) * χ
+    sqrt2ωχ = -kPho2 * couple
+    χ2byω = 2χ^2 / ωc
 
     if barriers == :twoBarriers
         index = [constrained, 3 - constrained]
-        function forceMultiMol!(f::T, x::T) where T<:AbstractVector{T1
+        force = function twoBarriers!(f::T, x::T) where T<:AbstractVector{T1
             } where T1<:Real
 
             ∑μ = 0.0
@@ -451,6 +480,7 @@ function constructForce(nParticle::T1, nMolecule::T1, constrained::T1, ωc::T2,
             tmp = q * sqrt2ωχ 
             @inbounds @simd for i in eachindex(1:2)
                 μ = dipole(x[i], index[i])
+                # the return values of dvdr and dμdr is already negated
                 dv = dvdr(x[i], index[i])
                 dμ = dμdr(x[i], index[i])
                 f[i] = dv + (tmp + χ2byω * μ) * dμ
@@ -460,51 +490,47 @@ function constructForce(nParticle::T1, nMolecule::T1, constrained::T1, ωc::T2,
         end        
     else
         """
-            function forceiMultiMol(f::AbstractVector{T}, x::AbstractVector{T},
-            cache::AbstractMatrix{T}) where T<:Real
+            function disordered!(f::T, x::T, angle::T) where T<:Vector{T1
+                } where T1<:Real
 
-        The ugly but faster way of implementing multi-molecule force evaluation.
+        The ugly but faster way of implementing disordered multi-molecule force evaluation.
         """
-        function forceMultiMol!(f::T, x::T, angle::T) where T<:AbstractVector{T1
-            } where T1<:Real
+        if alignment == :disordered
+            force = function disordered!(f::T, x::T, angle::T) where T<:Vector{T1
+                } where T1<:Real
 
-            ∑μ = 0.0
-            q = x[end]
-            tmp = q * sqrt2ωχ 
-            @inbounds @simd for i in eachindex(1:length(x)-1)
-                cosθ = angle[i]
-                dv, μ, dμ = computeForceComponents(x[i])
-                f[i] = dv + tmp * dμ * cosθ
-                ∑μ += μ * cosθ
-            end
-            f[end] = kPho2 * q - sqrt2ωχ * ∑μ
-        end
-
-        function forceMultiMol!(f::T, x::T) where T<:AbstractVector{T1} where T1<:Real
-
-            ∑μ = 0.0
-            q = x[end]
-            tmp = q * sqrt2ωχ
-            @inbounds @simd for i in eachindex(1:length(x)-1)
-                dv, μ, dμ = computeForceComponents(x[i])
-                # f[i] = dv + (tmp + χ2byω * μ) * dμ
-                f[i] = dv + tmp * dμ
-                ∑μ += μ 
-            end
-            f[end] = kPho2 * q - sqrt2ωχ * ∑μ
-        end
-    end
-    if nParticle == nMolecule
-        # when there is no photon, we force the system to be 1D
-        # we will still use an 1-element vector as the input
-        return forceOneD!
-    else
-        if nMolecule == 1
-            # single-molecule and single photon
-            return forceSingleMol!
+                ∑μ = 0.0
+                q = x[end]
+                tmp = q * sqrt2ωχ 
+                @inbounds @simd for i in eachindex(1:length(x)-1)
+                    cosθ = angle[i]
+                    dv, μ, dμ = computeForceComponents(x[i])
+                    f[i] = dv + tmp * dμ * cosθ
+                    ∑μ += μ * cosθ
+                end
+                f[end] = kPho2 * q - sqrt2ωχ * ∑μ
+            end            
         else
-            # multi-molecules and single photon
-            return forceMultiMol!
+            """
+                function ordered!(f::T, x::T) where T<:Vector{T1
+                    } where T1<:Real
+
+            The ugly but faster way of implementing ordered multi-molecule force evaluation.
+            """
+            force = function ordered!(f::T, x::T) where T<:Vector{T1} where T1<:Real
+                
+                ∑μ = 0.0
+                q = x[end]
+                tmp = q * sqrt2ωχ
+                @inbounds @simd for i in eachindex(1:length(x)-1)
+                    dv, μ, dμ = computeForceComponents(x[i])
+                    f[i] = dv + (tmp + χ2byω * μ) * dμ
+                    # f[i] = dv + tmp * dμ
+                    ∑μ += μ 
+                end
+                f[end] = kPho2 * q - sqrt2ωχ * ∑μ
+            end
         end
+        return force
     end
 end
