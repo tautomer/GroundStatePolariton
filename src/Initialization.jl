@@ -463,11 +463,8 @@ function multi(constrained::T1, ωc::T2, χ::T2, alignment::T3, barriers::T3
     ) where {T1<:Integer, T2<:Float64, T3<:Symbol}
     
     # compute the constants in advances. they can be expensive for many cycles
-    kPho = 0.5 * ωc^2
-    kPho2 = -2kPho
-    # sqrt(2 / ω_c^3) * χ
-    couple = sqrt(2/ωc^3) * χ
-    sqrt2ωχ = -kPho2 * couple
+    kPho2 = -ωc^2
+    sqrt2ωχ = sqrt(2ωc) * χ
     χ2byω = 2χ^2 / ωc
 
     if barriers == :twoBarriers
@@ -475,16 +472,18 @@ function multi(constrained::T1, ωc::T2, χ::T2, alignment::T3, barriers::T3
         force = function twoBarriers!(f::T, x::T) where T<:AbstractVector{T1
             } where T1<:Real
 
-            ∑μ = 0.0
             q = x[end]
             tmp = q * sqrt2ωχ 
+            f[1] = dipole(x[1], index[1])
+            f[2] = dipole(x[2], index[2])
+            ∑μ = f[1] + f[2]
             @inbounds @simd for i in eachindex(1:2)
-                μ = dipole(x[i], index[i])
+                # μ = dipole(x[i], index[i])
                 # the return values of dvdr and dμdr is already negated
                 dv = dvdr(x[i], index[i])
                 dμ = dμdr(x[i], index[i])
-                f[i] = dv + (tmp + χ2byω * μ) * dμ
-                ∑μ += μ
+                f[i] = dv + (tmp + χ2byω * ∑μ) * dμ
+                # ∑μ += μ
             end
             f[end] = kPho2 * q - sqrt2ωχ * ∑μ
         end        

@@ -110,3 +110,21 @@ function dμdr(x::Float64, k::Int64=1)
     end
     return dμ
 end
+
+function ddμdr(x::Float64, k::Int64=1)
+    ddμ = 0.0
+    @inbounds @simd for i in eachindex(1:6)
+        ϕ = dipoleCoeff[1, i, k] * x + dipoleCoeff[2, i, k]
+        ddμ += dipoleCoeff[4, i, k] * dipoleCoeff[1, i, k] * sin(ϕ)
+    end
+    return ddμ
+end
+
+function ddvdr(x::Float64, k::Int64=1)
+    ddv = 0.0
+    @inbounds @simd for i in eachindex(1:8)
+        ϕ = pesCoeff[1, i, k] * x
+        ddv += -pesCoeff[3, i, k] * pesCoeff[1, i, k] * cos(ϕ)
+    end
+    return ddv
+end

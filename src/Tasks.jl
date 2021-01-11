@@ -33,12 +33,14 @@ end
     nb::T1
     nw::T1
     nstep::T1
+    constrained::T1
     temp::T2
     ks::T2
     bound::Vector{T2}
     ωc::T2
     χ::T2
     unbias::T3
+    barriers::T3
 end
 
 function computeKappa(input::KappaInput)
@@ -101,33 +103,27 @@ function computeKappa(input::KappaInput)
         # @. mol.v = vb * (-1)^k
         v0 = corr.getCentroid(mol.v)
         # println(mol.x[2])
-        # println(output, "# ", v0)
         fs0 = corr.fluxSide(fs0, v0, v0)
-        # traj = string("traj_", 2i+k-2, ".txt")
+        # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
+        # println(output, "# ", v0)
         # println(output, 0, " ", mol.x[1], " ", mol.x[2], " ", pot(mol.x))
         @inbounds for j in 1:nstep
             # Dynamics.velocityVerlet!(mol, bath, param, rng, forceEval!, cache,
             #     alignment)
             Dynamics.velocityVerlet!(mol, bath, param, forceEval!, alignment)
             q[j] = corr.getCentroid(mol.x)
-            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", pot(mol.x))
-            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[end])
-            # println(output, j, " ", mean(@view mol.x[2:end-1]))
-            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", 918.0 * mol.v[1]^2)
-            # e[j+1] += reactiveEnergy(mol)
-            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3], " ", mol.x[4])
+            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3])
             # if q[j] * q[j-1] < 0
             #     println(output, "# here")
             # end
         end
         # close(output)
         corr.fluxSide!(fs, v0, q)
-        # end
     end
     corr.normalize!(fs, fs0)
 
-    return printKappa(fs, flnmID, param.Δt, flag="")
+    return printKappa(fs, flnmID, param.Δt, flag=string(input.constrained))
 end
 
 function printKappa(fs::AbstractVector{T}, flnmID::S, dt::T; flag::S=""
@@ -181,16 +177,12 @@ function umbrellaSampling(input::UmbrellaInput)
     temp = input.temp / au2kelvin
     xi = umbrellaSetup(temp, nw, ks, bound, input.unbias)
     rng, param, mol, bath, forceEval!, cache, flnmID = initialize(np, nb,
-        input.temp, input.ωc, input.χ, ks=ks, dynamics=:systemBath,
-        model=:fullSystem)
+        input.temp, input.ωc, input.χ, ks=ks, constrained=input.constrained,
+        barriers=input.barriers, dynamics=:systemBath, model=:fullSystem)
     us_param, pmf_array =  WHAM.setup(temp, nw, bound, xi, ks/2.0, nBin=10*nw+1,
         method=input.unbias)
 
-    if param.nMol == 1
-        alignment = Val(:ordered)
-    else
-        alignment = Val(input.alignment)
-    end
+    alignment = Val(:ordered)
     if param.beadMol > 1
         xi .*= sqrt(param.beadMol)
     end
