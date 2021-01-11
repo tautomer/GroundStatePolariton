@@ -419,7 +419,7 @@ function constructForce(nParticle::T1, nMolecule::T1, constrained::T1, ωc::T2,
             return single(ωc, χ, false)
         else
             # multi-molecules and single photon
-            return multi(constrained, ωc, χ, alignment, barriers)
+            return multi(nMolecule, constrained, ωc, χ, alignment, barriers)
         end
     end
 end
@@ -459,8 +459,8 @@ function single(ωc::T1, χ::T1, itp::Bool) where T1<:Float64
     end
 end
 
-function multi(constrained::T1, ωc::T2, χ::T2, alignment::T3, barriers::T3
-    ) where {T1<:Integer, T2<:Float64, T3<:Symbol}
+function multi(nMolecule::T1, constrained::T1, ωc::T2, χ::T2, alignment::T3,
+    barriers::T3) where {T1<:Integer, T2<:Float64, T3<:Symbol}
     
     # compute the constants in advances. they can be expensive for many cycles
     kPho2 = -ωc^2
@@ -468,68 +468,79 @@ function multi(constrained::T1, ωc::T2, χ::T2, alignment::T3, barriers::T3
     χ2byω = 2χ^2 / ωc
 
     if barriers == :twoBarriers
-        index = [constrained, 3 - constrained]
-        force = function twoBarriers!(f::T, x::T) where T<:AbstractVector{T1
+        index = repeat([3 - constrained], nMolecule)
+        index[1] = constrained
+    else
+        index = repeat([1], nMolecule)
+    end
+    force = function twoBarriers!(f::T, x::T) where T<:AbstractVector{T1
+        } where T1<:Real
+
+        q = x[end]
+        tmp = q * sqrt2ωχ 
+        f[1] = dipole(x[1], index[1])
+        f[2] = dipole(x[2], index[2])
+        ∑μ = f[1] + f[2]
+        @inbounds @simd for i in eachindex(1:2)
+            # μ = dipole(x[i], index[i])
+            # the return values of dvdr and dμdr is already negated
+            dv = dvdr(x[i], index[i])
+            dμ = dμdr(x[i], index[i])
+            f[i] = dv + (tmp + χ2byω * ∑μ) * dμ
+            # ∑μ += μ
+        end
+        f[end] = kPho2 * q - sqrt2ωχ * ∑μ
+    end        
+    """
+        function disordered!(f::T, x::T, angle::T) where T<:Vector{T1
             } where T1<:Real
 
+    The ugly but faster way of implementing disordered multi-molecule force evaluation.
+    """
+    if alignment == :disordered
+        force = function disordered!(f::T, x::T, angle::T) where T<:Vector{T1
+            } where T1<:Real
+
+            n = length(x)-1
+            ∑μ = 0.0
             q = x[end]
             tmp = q * sqrt2ωχ 
-            f[1] = dipole(x[1], index[1])
-            f[2] = dipole(x[2], index[2])
-            ∑μ = f[1] + f[2]
-            @inbounds @simd for i in eachindex(1:2)
-                # μ = dipole(x[i], index[i])
-                # the return values of dvdr and dμdr is already negated
+            @inbounds @simd for i in eachindex(1:n)
+                ∑μ += dipole(x[i], index[i])
+            end
+            @inbounds @simd for i in eachindex(1:n)
+                cosθ = angle[i]
+                # dv, μ, dμ = computeForceComponents(x[i])
+                dv = dvdr(x[i], index[i])
+                dμ = dμdr(x[i], index[i])
+                # f[i] = dv + tmp * dμ * cosθ
+                f[i] = dv + (tmp + χ2byω * ∑μ) * dμ * cosθ
+            end
+            f[end] = kPho2 * q - sqrt2ωχ * ∑μ
+        end            
+    else
+        """
+            function ordered!(f::T, x::T) where T<:Vector{T1
+                } where T1<:Real
+
+        The ugly but faster way of implementing ordered multi-molecule force evaluation.
+        """
+        force = function ordered!(f::T, x::T) where T<:Vector{T1} where T1<:Real
+            
+            n = length(x)-1
+            ∑μ = 0.0
+            q = x[end]
+            tmp = q * sqrt2ωχ 
+            @inbounds @simd for i in eachindex(1:n)
+                ∑μ += dipole(x[i], index[i])
+            end
+            @inbounds @simd for i in eachindex(1:n)
                 dv = dvdr(x[i], index[i])
                 dμ = dμdr(x[i], index[i])
                 f[i] = dv + (tmp + χ2byω * ∑μ) * dμ
-                # ∑μ += μ
             end
             f[end] = kPho2 * q - sqrt2ωχ * ∑μ
-        end        
-    else
-        """
-            function disordered!(f::T, x::T, angle::T) where T<:Vector{T1
-                } where T1<:Real
-
-        The ugly but faster way of implementing disordered multi-molecule force evaluation.
-        """
-        if alignment == :disordered
-            force = function disordered!(f::T, x::T, angle::T) where T<:Vector{T1
-                } where T1<:Real
-
-                ∑μ = 0.0
-                q = x[end]
-                tmp = q * sqrt2ωχ 
-                @inbounds @simd for i in eachindex(1:length(x)-1)
-                    cosθ = angle[i]
-                    dv, μ, dμ = computeForceComponents(x[i])
-                    f[i] = dv + tmp * dμ * cosθ
-                    ∑μ += μ * cosθ
-                end
-                f[end] = kPho2 * q - sqrt2ωχ * ∑μ
-            end            
-        else
-            """
-                function ordered!(f::T, x::T) where T<:Vector{T1
-                    } where T1<:Real
-
-            The ugly but faster way of implementing ordered multi-molecule force evaluation.
-            """
-            force = function ordered!(f::T, x::T) where T<:Vector{T1} where T1<:Real
-                
-                ∑μ = 0.0
-                q = x[end]
-                tmp = q * sqrt2ωχ
-                @inbounds @simd for i in eachindex(1:length(x)-1)
-                    dv, μ, dμ = computeForceComponents(x[i])
-                    f[i] = dv + (tmp + χ2byω * μ) * dμ
-                    # f[i] = dv + tmp * dμ
-                    ∑μ += μ 
-                end
-                f[end] = kPho2 * q - sqrt2ωχ * ∑μ
-            end
         end
-        return force
     end
+    return force
 end
