@@ -53,10 +53,10 @@ using Profile
 function testKappa(wc, eta)
     cd("energy")
     chi = eta * wc
-    input = KappaInput(2, 1, 1, 1, 1, 300.0, wc, chi, :systemBath, :fullSystem,
-        :ordered, :oneBarrier) 
+    input = KappaInput(3, 1, 1, 1, 1, 300.0, wc, chi, :systemBath, :fullSystem,
+        :ordered, :twoBarriers) 
     @time computeKappa(input)
-    input.ntraj = 20000
+    input.ntraj = 200000
     input.nstep = 2000
     Profile.clear_malloc_data()
     @time computeKappa(input)
@@ -127,7 +127,7 @@ function read()
 end
 
 function testPMF(wc::Real, chi::Real, method::Symbol)
-    cd("energy/2.0")
+    cd("energy")
     if length(ARGS) != 0
         nb = parse(Int64, ARGS[1])
         wc = parse(Float64, ARGS[2])
@@ -139,13 +139,15 @@ function testPMF(wc::Real, chi::Real, method::Symbol)
         temp = 300.0
         nb = 1
     end
-    input = UmbrellaInput(2, nb, 2, 1, temp, 0.3, [-3.5, 3.5], wc, chi,
-        method)
+    input = UmbrellaInput(3, nb, 2, 1, 1, temp, 0.3, [-3.5, 3.5], wc, chi,
+        method, :twoBarriers) 
+        # method, :twoBarriers) 
     @time umbrellaSampling(input)
     input.nw = 41
-    input.nstep = convert(Int64, 1e7)
+    input.nstep = convert(Int64, 1e8)
     Profile.clear_malloc_data()
-    @time umbrellaSampling(input)
+    @time bin, f = umbrellaSampling(input)
+    print(WHAM.TSTRate(bin, f, au2kelvin/temp, amu2au))
 end
 
 function computeΔΔG(kappaFile::String, temp::Real)
@@ -160,25 +162,27 @@ function computeΔΔG(kappaFile::String, temp::Real)
     writedlm("data/ddg.txt", data)
 end
 
-function resonance(η::Float64, np::Integer)
+function resonance(η::Float64, np::Integer, constrined::Integer)
     wc = [0.0001, 0.0005, 0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.032,
         0.04, 0.06, 0.08, 0.12, 0.16, 0.2, 0.4, 0.6, 0.8, 1.0, 3.0, 5.0]
     # wc = [0.0025, 0.0075, 0.025]
     # wc = [0.0001, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
     kappa = similar(wc)
-    input = KappaInput(2, 1, 1, 1, 300.0, wc[1], η*wc[1], :systemBath, :fullSystem,
-        :ordered) 
+    #input = KappaInput(2, 1, 1, 1, 300.0, wc[1], η*wc[1], :systemBath, :fullSystem,
+    #    :ordered) 
+    input = KappaInput(np, 1, 1, 1, constrined, 300.0, wc[1], η*wc[1], :systemBath, :fullSystem,
+        :ordered, :twoBarriers) 
     # input = InputValues(np, 1, 1, 300.0, wc[1], η*wc[1], :langevin,
     #     :fullSystem, :ordered) 
     # dir = "scaneta"
-    dir = string(η, "_", np-1, "_system_bath")
+    dir = string(η, "_", np-1, "_", constrined)
     if ! isdir(dir)
         mkdir(dir)
     end
     cd(dir)
     computeKappa(input)
-    input.nstep = 6000
-    input.ntraj = 100000
+    input.nstep = 2000
+    input.ntraj = 200000
     Threads.@threads for i in eachindex(wc)
         χ = η * wc[i]
         if length("$χ") >= 10
@@ -190,23 +194,23 @@ function resonance(η::Float64, np::Integer)
         fs = computeKappa(input)
         @views kappa[i] = mean(fs[end-50:end])
     end
-    writedlm("kappa_new", [wc kappa])
+    writedlm("kappa", [wc kappa])
 end
 
-function scaneta(wc::Float64, np::Integer)
+function scaneta(wc::Float64, np::Integer, constrined::Integer)
     eta = [0.0001, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
     kappa = similar(eta)
-    input = InputValues(np, 1, 1, 300.0, wc, eta[1]*wc, :langevin,
-        :fullSystem, :ordered) 
+    input = KappaInput(np, 1, 1, 1, constrined, 300.0, wc, eta[1]*wc, :systemBath, :fullSystem,
+        :ordered, :twoBarriers) 
     # dir = "scaneta"
-    dir = string("wc_", wc, "_", np-1, "")
+    dir = string("wc_", wc, "_", np-1, "_", constrined)
     if ! isdir(dir)
         mkdir(dir)
     end
     cd(dir)
     computeKappa(input)
-    input.nstep = 2000
-    input.ntraj = 100000
+    input.nstep = 5000
+    input.ntraj = 200000
     Threads.@threads for i in eachindex(eta)
         χ = wc * eta[i]
         input.χ = χ
@@ -216,10 +220,70 @@ function scaneta(wc::Float64, np::Integer)
     writedlm("kappa", [eta/sqrt(amu2au) kappa])
 end
 
-# resonance(4.0, 2)
-# scaneta(0.1706, 2)
+function scan()
+    ωc = [0.0001, 0.0005, 0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.032,
+        0.04, 0.06, 0.08, 0.12, 0.16, 0.2, 0.4, 0.6, 0.8, 1.0]
+    η = [0.0001, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0]
+    tst = [1.3917051728344806e-23, 1.6557290752653633e-23]
+    rate = similar(tst)
+    iter = [(i, j, k) for i in ωc, j in η, k in [1, 2]]
+    κ = Array{Float64}(undef, size(iter))
+    left =[]
+    dir = "scan2d"
+    if ! isdir(dir)
+        mkdir(dir)
+    end
+    cd(dir)
+    input = repeat([KappaInput(3, 1, 1, 1, 1, 300.0, 10.0, η[1]*ωc[1],
+        :systemBath, :fullSystem, :ordered, :twoBarriers)], Threads.nthreads()) 
+    computeKappa(input[1])
+    for i in input
+        i.nstep = 2000
+        i.ntraj = 200000        
+    end
+    # for i in eachindex(iter)
+    Threads.@threads for i in eachindex(iter)
+        tid = Threads.threadid()
+        inp = input[tid]
+        config = iter[i]
+        inp.ωc = config[1]
+        χ = inp.ωc * config[2]
+        if length("$χ") >= 10
+            inp.χ = round(χ, digits=9)
+        else
+            inp.χ = χ
+        end
+        inp.constrained = config[3]
+        flnm = string("fs_", inp.ωc, "_", inp.χ, "_", 300.0, "_", inp.nb,
+            "_", inp.constrained, ".txt")
+        if isfile(flnm)
+	        fs = readdlm(flnm, comments=true)
+        else
+            println("File ", flnm, " not exist")
+            fs = computeKappa(inp)
+        end
+        @views κ[i] = mean(fs[end-50:end])
+    end
+    out = open("yield", "w")
+    for i in eachindex(ωc)
+        for j in eachindex(η)
+            @printf(out, "%7.4f %7.4f ", ωc[i], η[j])
+            for k in [1, 2]
+               rate[k] = κ[i, j, k] * tst[k]
+               @printf(out, "%9.7f ", κ[i, j, k])
+            end
+            k_total = sum(rate)
+            @printf(out, "%11.7g %11.7g %9.7f %9.7f\n", rate[1], rate[2], rate[1]/k_total, rate[2]/k_total)
+        end
+        @printf(out, "\n")
+    end
+end
+
+# resonance(4.0, 3, 2)
+# scaneta(0.025, 3, 1)
 # computeΔΔG("data/eta_scan.txt", 300.0)
-testKappa(0.1, 4.0)
-# testPMF(0.005, 0.04, :UI)
+# testKappa(0.025, 2.0)
+# testPMF(0.032, 0.064, :UI)
 # rpmdrate(0.005, 0.04, :UI)
 # read()
+scan()

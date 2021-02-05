@@ -55,7 +55,6 @@ function computeKappa(input::KappaInput)
         input.temp, input.ωc, input.χ, constrained=input.constrained,
         barriers=input.barriers, dynamics=input.dynamics, model=input.model, 
         alignment=input.alignment)
-    
     # dir = string(input.ωc, "_", input.χ)
     # if ! isdir(dir)
     #     mkdir(dir)
@@ -113,7 +112,8 @@ function computeKappa(input::KappaInput)
             #     alignment)
             Dynamics.velocityVerlet!(mol, bath, param, forceEval!, alignment)
             q[j] = corr.getCentroid(mol.x)
-            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3])
+            # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3],
+            #     " ", cbo(mol.x, input.constrained, input.ωc/au2ev, input.χ/au2ev))
             # if q[j] * q[j-1] < 0
             #     println(output, "# here")
             # end

@@ -128,3 +128,12 @@ function ddvdr(x::Float64, k::Int64=1)
     end
     return ddv
 end
+
+function cbo(x::Vector{T}, constrained::Integer, ωc::T, χ::T) where T<:Real
+    q = x[end]
+    e = (ωc * q)^2 / 2.0
+    ∑μ = dipole(x[1], constrained) + dipole(x[2], 3-constrained) 
+    e += pes(x[1], constrained) + pes(x[2], 3-constrained) 
+    e += sqrt(2ωc) * χ * q * ∑μ + (χ * ∑μ)^2 / ωc
+    return e
+end
