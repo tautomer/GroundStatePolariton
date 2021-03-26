@@ -14,7 +14,17 @@ end
 const order = Val{:ordered}
 const disorder = Val{:disordered}
 const Align = Union{order, disorder}
+# compute 1 / √3 for Lengevin dynamics
+const invSqrt3 = 1.0 / sqrt(3.0)
+# collision frequency for Andersen thermostat
+const cf = 0.0
+# cache arrays for propagating dynamics
+# will be resized at runtime
+const cache1 = Vector{Float64}(undef, 0)
+const cache2 = Vector{Float64}(undef, 0)
+const cache3 = Vector{Float64}(undef, 0)
 
+# TODO: this way of implementation is really dumb
 function copyArrays!(p::Particles, b::Bath1D, saved::Tuple) 
     copy!(saved[1], p.x)
     copy!(saved[2], p.f)
@@ -44,6 +54,7 @@ function copyArrays!(saved::Tuple, p::Particles, b::Langevin)
     copy!(p.f, saved[2])
     copy!(p.v, saved[3])
 end
+
 """
     function andersen!(p::FullSystemParticle, b::ClassicalBathMode, cf::T,
         cache::DynamicsCache) where T<:Real
@@ -51,11 +62,10 @@ end
 Perform Andersen thermostat for every 1/ν steps. `cf` is the collision frequency.
 Removing COM velocity is currently missing.
 """
-function andersen!(p::Particles, b::ClassicalBathMode, cf::T,
-    rng::AbstractRNG, cache::SystemBathCache) where T<:Real
+function andersen!(p::Particles, b::ClassicalBathMode, rng::AbstractRNG)
 
-    andersen!(p, cf, rng, cache)
-    andersen!(b.v, cf, rng, b.σ, cache.cacheBath)
+    andersen!(p, rng, cache1)
+    andersen!(b.v, rng, b.σ, cache2)
 end
 
 """
@@ -64,12 +74,13 @@ end
 
 Andersen thermostat for all classical particles in the system DOF.
 """
-function andersen!(p::FullSystemParticle, cf::T, rng::AbstractRNG,
-    cache::SystemBathCache) where T<:Real
+function andersen!(p::FullSystemParticle, rng::AbstractRNG,
+    cache::Vector)
 
-    Random.rand!(rng, cache.cacheMol1)
+    # this cache should be the same length of p.v
+    Random.rand!(rng, cache)
     @inbounds @simd for i in eachindex(1:p.n)
-        p.v[i] = collision(cache.cacheMol1[i], cf, p.v[i], p.σ[i], rng)
+        p.v[i] = collision(cache, p.v[i], p.σ[i], rng)
     end
 end
 
@@ -77,15 +88,14 @@ end
     function andersen!(p::RPMDParticle, cf::T, rng::AbstractRNG,
         cache::SystemBathCache) where T<:Real
 
-Andersen thermostat for all RPMD particles in the system DOF.
+Not really an Andersen thermostat, but resampling for all RPMD particles in the
+system DOFs.
 """
-function andersen!(p::RPMDParticle, cf::T, rng::AbstractRNG,
-    cache::SystemBathCache) where T<:Real
+function andersen!(p::RPMDParticle, rng::AbstractRNG, cache::Vector)
 
     @inbounds @simd for i in eachindex(p.m)
         @views v = p.v[:, i]
         velocitySampling!(v, p.σ[i], rng)
-        # andersen!(v, cf, rng, p.σ[i], cache.cacheMol1)
     end
 end
 
@@ -93,18 +103,19 @@ end
     function andersen!(v::T1, cf::T2, rng::AbstractRNG, σ::T2, cache::Vector{T2}
         ) where {T1<:AbstractArray{T}, T2<:Real} where T<:Real
 
-Andersen thermostat for bath modes and ring polymer beads in the same atom.
+Andersen thermostat for bath modes.
 """
-function andersen!(v::T1, cf::T2, rng::AbstractRNG, σ::T2, cache::Vector{T2}
-    ) where {T1<:AbstractArray{T}, T2<:Real} where T<:Real
+function andersen!(v::T1, rng::AbstractRNG, σ::T2, cache::T1
+    ) where {T1<:AbstractArray{T}, T2<:Float64} where T<:Float64
 
+    # this cache should be of the same length as all bath modes
     Random.rand!(rng, cache)
     @inbounds @simd for i in eachindex(v)
-        v[i] = collision(cache[i], cf, v[i], σ, rng)
+        v[i] = collision(cache[i], v[i], σ, rng)
     end
 end
 
-function collision(ran::T, cf::T, v::T, σ::T, rng::AbstractRNG) where T<:Real
+function collision(ran::T, v::T, σ::T, rng::AbstractRNG) where T<:Float64
     if ran < cf
         v = Random.randn(rng) * σ
     end
@@ -124,6 +135,7 @@ function velocitySampling!(p::RPMDParticle, b::Bath1D, rng::AbstractRNG)
     velocitySampling!(b.v, b.σ, rng)
 end
 
+# TODO: Langevin should be moved out of here
 function velocitySampling!(p::Particles1D, b::Langevin, rng::AbstractRNG)
 
     velocitySampling!(p.v, p.σ, rng)
@@ -135,12 +147,12 @@ function velocitySampling!(v::AbstractVector{T}, σ::Union{T, Vector{T}},
     v .*= σ
 end
 
+# TODO: should `dyby2m` be kept as an internal variable of this module?
 function velocityUpdate!(p::Particles, b::Bath1D)
     @. p.v += p.f * p.dtby2m
     @. b.v += b.f * b.dtby2m
 end
 
-const invSqrt3 = 1.0 / sqrt(3.0)
 """
     function randomForce(prefac::T, r1::T, r2::T) where T<:Float64
 
