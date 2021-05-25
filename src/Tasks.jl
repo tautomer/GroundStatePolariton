@@ -5,6 +5,7 @@ include("Fitting.jl")
 
 using Parameters
 using DelimitedFiles
+# using HDF5
 using Printf
 using Random
 using WHAM
@@ -81,6 +82,9 @@ function computeKappa(input::KappaInput)
             copy(bath.f), copy(bath.v))
     end
     skip = ntraj / 20
+    # side = open("train_side.txt", "w")
+    # init = h5open("training_data.h5", "w")
+    # xvf = Vector{Float64}(undef, 249)
     @inbounds for i in 1:ntraj
         if i % skip == 0
             println("Running trajcetory ", i)
@@ -92,10 +96,19 @@ function computeKappa(input::KappaInput)
             end
         end
         Dynamics.copyArrays!(savedArrays, mol, bath)
-        Dynamics.equilibration!(mol, bath, 100, rng, param, forceEval!, cache,
+        Dynamics.equilibration!(mol, bath, 1000, rng, param, forceEval!, cache,
             alignment, Val(:cnstr))
         Dynamics.copyArrays!(mol, bath, savedArrays)
         Dynamics.velocitySampling!(mol, bath, rng)
+        # xvf[1:3] .= mol.x
+        # xvf[4:6] .= mol.v
+        # xvf[7:9] .= mol.f
+        # xvf[10:89] .= bath.x
+        # xvf[90:169] .= bath.v
+        # xvf[170:249] .= bath.f
+        # write(init, string("molx", i), xvf)
+            # writedlm(io, [mol.x mol.v mol.f])
+            # writedlm(io, [bath.x bath.v bath.f])
         # copy!(vb, mol.v)
         # for k in 1:2
         # mol.x .= 0.0
@@ -105,8 +118,10 @@ function computeKappa(input::KappaInput)
         fs0 = corr.fluxSide(fs0, v0, v0)
         # traj = string("traj_", i, ".txt")
         # output = open(traj, "w")
+        # println(output, 0, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3],
+        #     " ", cbo(mol.x, input.constrained, input.ωc/au2ev, input.χ/au2ev))
         # println(output, "# ", v0)
-        # println(output, 0, " ", mol.x[1], " ", mol.x[2], " ", pot(mol.x))
+        # println(output, 0, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3], " ")
         @inbounds for j in 1:nstep
             # Dynamics.velocityVerlet!(mol, bath, param, rng, forceEval!, cache,
             #     alignment)
@@ -118,9 +133,15 @@ function computeKappa(input::KappaInput)
             #     println(output, "# here")
             # end
         end
+        # h5open(string("traj_", i, ".txt"), "w") do io
+        #     write(io, "q", q)
+        # end
+        # println(side, corr.heaviside(q[end]))
         # close(output)
         corr.fluxSide!(fs, v0, q)
     end
+    # close(init)
+    # close(side)
     corr.normalize!(fs, fs0)
 
     return printKappa(fs, flnmID, param.Δt, flag=string(input.constrained))

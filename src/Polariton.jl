@@ -53,10 +53,10 @@ using Profile
 function testKappa(wc, eta)
     cd("energy")
     chi = eta * wc
-    input = KappaInput(3, 1, 1, 1, 1, 300.0, wc, chi, :systemBath, :fullSystem,
+    input = KappaInput(3, 1, 1, 1, 2, 300.0, wc, chi, :systemBath, :fullSystem,
         :ordered, :twoBarriers) 
     @time computeKappa(input)
-    input.ntraj = 200000
+    input.ntraj = 300000
     input.nstep = 2000
     Profile.clear_malloc_data()
     @time computeKappa(input)
@@ -139,7 +139,7 @@ function testPMF(wc::Real, chi::Real, method::Symbol)
         temp = 300.0
         nb = 1
     end
-    input = UmbrellaInput(3, nb, 2, 1, 1, temp, 0.3, [-3.5, 3.5], wc, chi,
+    input = UmbrellaInput(3, nb, 2, 1, 2, temp, 0.3, [-3.5, 3.5], wc, chi,
         method, :twoBarriers) 
         # method, :twoBarriers) 
     @time umbrellaSampling(input)
@@ -163,10 +163,10 @@ function computeΔΔG(kappaFile::String, temp::Real)
 end
 
 function resonance(η::Float64, np::Integer, constrined::Integer)
-    wc = [0.0001, 0.0005, 0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.032,
-        0.04, 0.06, 0.08, 0.12, 0.16, 0.2, 0.4, 0.6, 0.8, 1.0, 3.0, 5.0]
-    # wc = [0.0025, 0.0075, 0.025]
-    # wc = [0.0001, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+    # wc = [0.0001, 0.0005, 0.001, 0.0025, 0.005, 0.0075, 0.01, 0.025, 0.032,
+    #     0.04, 0.06, 0.08, 0.12, 0.16, 0.2, 0.4, 0.6, 0.8, 1.0, 3.0, 5.0]
+    wc = [0.00875, 0.015, 0.02, 0.0285, 0.036, 0.044, 0.048, 0.052, 0.056,
+        0.07, 0.1, 0.14, 0.18]
     kappa = similar(wc)
     #input = KappaInput(2, 1, 1, 1, 300.0, wc[1], η*wc[1], :systemBath, :fullSystem,
     #    :ordered) 
@@ -186,7 +186,7 @@ function resonance(η::Float64, np::Integer, constrined::Integer)
     Threads.@threads for i in eachindex(wc)
         χ = η * wc[i]
         if length("$χ") >= 10
-            χ -= eps(χ)
+            χ = round(χ, digits=9)
         end
         input.ωc = wc[i]
         # input.ωc = η
@@ -228,7 +228,6 @@ function scan()
     rate = similar(tst)
     iter = [(i, j, k) for i in ωc, j in η, k in [1, 2]]
     κ = Array{Float64}(undef, size(iter))
-    left =[]
     dir = "scan2d"
     if ! isdir(dir)
         mkdir(dir)
@@ -279,11 +278,11 @@ function scan()
     end
 end
 
-# resonance(4.0, 3, 2)
+resonance(2.0, 3, 1)
 # scaneta(0.025, 3, 1)
 # computeΔΔG("data/eta_scan.txt", 300.0)
 # testKappa(0.025, 2.0)
-# testPMF(0.032, 0.064, :UI)
+# testPMF(0.064, 0.064, :UI)
 # rpmdrate(0.005, 0.04, :UI)
 # read()
-scan()
+# scan()
