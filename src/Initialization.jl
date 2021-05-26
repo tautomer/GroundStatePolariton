@@ -45,7 +45,16 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
     nBathTotal = nMolecule * nBath
 
     # the suffix for all output file names to identify the setup and avoid overwritting
-    flnmID = string(ωc, "_", chi, "_", temp, "_", nb)
+    if nb > 1
+        id = nb
+    elseif nParticle > 2
+        if barriers == :oneBarrier
+            id = nMolecule
+        else
+            id = constrained
+        end
+    end
+    flnmID = string(ωc, "_", chi, "_", temp, "_", id)
     # convert values to au, so we can keep more human-friendly values outside
     ωc /= au2ev
     chi /= au2ev

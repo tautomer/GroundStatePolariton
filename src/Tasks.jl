@@ -144,7 +144,7 @@ function computeKappa(input::KappaInput)
     # close(side)
     corr.normalize!(fs, fs0)
 
-    return printKappa(fs, flnmID, param.Δt, flag=string(input.constrained))
+    return printKappa(fs, flnmID, param.Δt)
 end
 
 function printKappa(fs::AbstractVector{T}, flnmID::S, dt::T; flag::S=""
