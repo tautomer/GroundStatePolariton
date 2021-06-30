@@ -67,20 +67,21 @@ function computeKappa(input::KappaInput)
         alignment = Val(input.alignment)
     end
 
+    eqMol = deepcopy(mol)
+    eqBath = deepcopy(bath)
     fs0 = 0.0
     fs = zeros(Float64, nstep)
     q = Vector{Float64}(undef, nstep)
     # vb = copy(mol.v)
-    Dynamics.velocitySampling!(mol, bath, rng)
-    Dynamics.force!(mol, bath, forceEval!, alignment)
-    Dynamics.equilibration!(mol, bath, 4000, rng, param, forceEval!, cache,
+    Dynamics.velocitySampling!(eqMol, eqBath, rng)
+    Dynamics.equilibration!(eqMol, eqBath, 4000, rng, param, forceEval!, cache,
         alignment, Val(:cnstr))
-    if input.dynamics == :langevin
-        savedArrays = (copy(mol.x), copy(mol.f), copy(mol.v))
-    else
-        savedArrays = (copy(mol.x), copy(mol.f), copy(mol.v), copy(bath.x),
-            copy(bath.f), copy(bath.v))
-    end
+    # if input.dynamics == :langevin
+    #     savedArrays = (copy(mol.x), copy(mol.f), copy(mol.v))
+    # else
+    #     savedArrays = (copy(mol.x), copy(mol.f), copy(mol.v), copy(bath.x),
+    #         copy(bath.f), copy(bath.v))
+    # end
     skip = ntraj / 20
     # side = open("train_side.txt", "w")
     # init = h5open("training_data.h5", "w")
@@ -95,10 +96,11 @@ function computeKappa(input::KappaInput)
                 mol.sumCosθ = sum(mol.cosθ)
             end
         end
-        Dynamics.copyArrays!(savedArrays, mol, bath)
-        Dynamics.equilibration!(mol, bath, 1000, rng, param, forceEval!, cache,
+        # Dynamics.copyArrays!(savedArrays, mol, bath)
+        Dynamics.equilibration!(eqMol, eqBath, 1000, rng, param, forceEval!, cache,
             alignment, Val(:cnstr))
-        Dynamics.copyArrays!(mol, bath, savedArrays)
+        # Dynamics.copyArrays!(mol, bath, savedArrays)
+        Dynamics.copyArrays!(eqMol, eqBath, mol, bath)
         Dynamics.velocitySampling!(mol, bath, rng)
         # xvf[1:3] .= mol.x
         # xvf[4:6] .= mol.v
@@ -123,9 +125,9 @@ function computeKappa(input::KappaInput)
         # println(output, "# ", v0)
         # println(output, 0, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3], " ")
         @inbounds for j in 1:nstep
-            # Dynamics.velocityVerlet!(mol, bath, param, rng, forceEval!, cache,
-            #     alignment)
-            Dynamics.velocityVerlet!(mol, bath, param, forceEval!, alignment)
+            Dynamics.velocityVerlet!(mol, bath, param, rng, forceEval!, cache,
+                alignment)
+            # Dynamics.velocityVerlet!(mol, bath, param, forceEval!, alignment)
             q[j] = corr.getCentroid(mol.x)
             # println(output, j, " ", mol.x[1], " ", mol.x[2], " ", mol.x[3],
             #     " ", cbo(mol.x, input.constrained, input.ωc/au2ev, input.χ/au2ev))

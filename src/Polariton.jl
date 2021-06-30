@@ -50,13 +50,14 @@ end
 # end
 # cd(dir)
 using Profile
+using StatProfilerHTML
 function testKappa(wc, eta)
     cd("energy")
     chi = eta * wc
-    input = KappaInput(3, 1, 1, 1, 2, 300.0, wc, chi, :systemBath, :fullSystem,
-        :ordered, :twoBarriers) 
+    input = KappaInput(2, 1, 1, 1, 1, 300.0, wc, chi, :langevin, :fullSystem,
+        :ordered, :singleBarrier) 
     @time computeKappa(input)
-    input.ntraj = 300000
+    input.ntraj = 200000
     input.nstep = 2000
     Profile.clear_malloc_data()
     @time computeKappa(input)
@@ -278,10 +279,10 @@ function scan()
     end
 end
 
-resonance(2.0, 3, 1)
+# resonance(2.0, 3, 1)
 # scaneta(0.025, 3, 1)
 # computeΔΔG("data/eta_scan.txt", 300.0)
-# testKappa(0.025, 2.0)
+testKappa(0.025, 2.0)
 # testPMF(0.064, 0.064, :UI)
 # rpmdrate(0.005, 0.04, :UI)
 # read()

@@ -15,7 +15,7 @@ end
 const freqCutoff = ω0[1]
 const eta = 800.0 / au2wn / 2.0 * amu2au
 # const eta = 0.5 * amu2au * freqCutoff
-const gamma = 200 / au2wn # 400 cm^-1
+const gamma = 400 / au2wn # 400 cm^-1
 
 """
     function initialize(nParticle::T1, temp::T2, ωc::T2, chi::T2) where {T1<:Integer, T2<:Real}
@@ -53,6 +53,8 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
         else
             id = constrained
         end
+    else
+        id = ""
     end
     flnmID = string(ωc, "_", chi, "_", temp, "_", id)
     # convert values to au, so we can keep more human-friendly values outside
@@ -70,7 +72,7 @@ function initialize(nParticle::T1, nb::T1, temp::T2, ωc::T2, chi::T2;
         bath, cache = buildBath(nBath, nMolecule, nb, x0, temp, dt)
     else
         # for Langevin dynamics
-        bath, cache = langevinParameters(nMolecule, temp, dt, model, mass)
+        bath, cache = langevinParameters(nMolecule, temp, dt, model, mass, rng)
     end
     if model == :normalModes
         q₊, q₋, forceEvaluation! = reducedModelSetup(ωc, chi, sumCosθ)
@@ -180,7 +182,7 @@ function computeBathParameters(nBath::T) where T<:Integer
 end
 
 function langevinParameters(nMolecule::Integer, temp::T, dt::T, model::Symbol,
-    mass::AbstractVector{T}) where T<:Real
+    mass::AbstractVector{T}, rng::MersenneTwister) where T<:Real
 
     # temporary variable for 0.5 * dt^2
     halfΔt2 = 0.5 * dt^2
@@ -204,15 +206,13 @@ function langevinParameters(nMolecule::Integer, temp::T, dt::T, model::Symbol,
     # as saving bath coordinates is necessary for system-bath model
     # TODO properly split system-bath model and langevin dynamics. A disptach might be necessary.
     if model == :normalModes
-        bath = Dynamics.LangevinModes(gamma, σ, halfΔt2γ, dtγ, dtσ, dt2by2m,
-            [1.0], [1.0])
+        bath = Dynamics.LangevinModes(gamma, σ, halfΔt2γ, dtγ, dtσ, dt2by2m)
         cache = Dynamics.LangevinCache(Vector{Float64}(undef, 3),
             Vector{Float64}(undef, 6), similar(mass), similar(mass))
     else
-        bath = Dynamics.LangevinFull(gamma, σ, halfΔt2γ, dtγ, dtσ, dt2by2m,
-            [1.0], [1.0])
-        cache = Dynamics.LangevinCache(Vector{Float64}(undef, 3),
-            Vector{Float64}(undef, 3*nMolecule),similar(mass),
+        bath = Dynamics.LangevinFull(gamma, 100/au2wn, σ, halfΔt2γ, dtγ, dtσ, dt2by2m)
+        cache = Dynamics.LangevinCache(Matrix{Float64}(undef, 2, 2),
+            Matrix{Float64}(undef, 2, nMolecule),similar(mass),
             similar(mass))
     end
     return bath, cache
@@ -436,19 +436,19 @@ end
 function single(ωc::T1, χ::T1, itp::Bool) where T1<:Float64
     # compute the constants in advances. they can be expensive for many cycles
     kPho = 0.5 * ωc^2
-    kPho2 = -2kPho
+    kPho2 = -2.0 * kPho
     # sqrt(2 / ω_c^3) * χ
-    couple = sqrt(2/ωc^3) * χ
+    couple = sqrt(2.0/ωc^3) * χ
     sqrt2ωχ = -kPho2 * couple
     χ2byω = 2χ^2 / ωc
+    tmp = Vector{Float64}(undef, 2)
     if itp
         v, mu = getPES()
         @inline function uTotal(x::AbstractVector{T}) where T<:AbstractFloat
             return -v(x[1]) - kPho * (couple*mu(x[1]) + x[2])^2
         end
         cache = GradientCache(zeros(2), zeros(2))
-        forceSingleMol! = (f, x) -> finite_difference_gradient!(f, uTotal, x, cache)
-        return forceSingleMol!
+        force = (f, x) -> finite_difference_gradient!(f, uTotal, x, cache)
     else
         """
             function forceSingleMol(f::AbstractVector{T}, x::AbstractVector{T},
@@ -457,15 +457,16 @@ function single(ωc::T1, χ::T1, itp::Bool) where T1<:Float64
         Compute force for one single molecule and one photon.
         Cache is dummy, since I can't get the code disptached for now.
         """
-        function forceSingleMol!(f::AbstractVector{T}, x::AbstractVector{T}
-            ) where T<:Real                
+        force = function fittedForce!(f::Vector{T}, x::Vector{T}) where T<:Float64
             
+            # interaction = sqrt2ωχ
             interaction = (couple * dipole(x[1]) + x[2])
-            f[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
-            f[2] = kPho2 * interaction
+            tmp[1] = dvdr(x[1]) + sqrt2ωχ * dμdr(x[1]) * interaction
+            tmp[2] = kPho2 * interaction
+            f .= tmp
         end
-        return forceSingleMol!
     end
+    return force
 end
 
 function multi(nMolecule::T1, constrained::T1, ωc::T2, χ::T2, alignment::T3,

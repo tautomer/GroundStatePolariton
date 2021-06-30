@@ -1,5 +1,5 @@
 module DynamicsConstructors
-using StaticArrays, ExportAll
+using StaticArrays, Random, ExportAll
 
 abstract type Particles end
 abstract type DynamicsParameters end
@@ -20,7 +20,7 @@ struct Parameters<:DynamicsParameters
     Δt::Float64
     z::Float64
     τ::Float64
-    nParticle::Int32
+    nParticle::Int64
     nMol::Int32
     nBath::Int32
     beadMol::Int16
@@ -94,13 +94,12 @@ end
 
 mutable struct LangevinFull<:Langevin
     γ::Float64
+    γc::Float64
     σ::Float64
     halfΔt2γ::Float64
     dtγ::Float64
     dtσ::Float64
     dt2by2m::Vector{Float64}
-    x::Vector{Float64}
-    v::Vector{Float64}
 end
 
 mutable struct LangevinModes<:Langevin
@@ -110,13 +109,11 @@ mutable struct LangevinModes<:Langevin
     dtγ::Float64
     dtσ::Float64
     dt2by2m::Float64
-    x::Vector{Float64}
-    v::Vector{Float64}
 end
 
 mutable struct LangevinCache<:Cache
-    ran1::Vector{Float64}
-    ran2::Vector{Float64}
+    ran1::Matrix{Float64}
+    ran2::Matrix{Float64}
     cacheMol1::Vector{Float64}
     cacheMol2::Vector{Float64}
 end
